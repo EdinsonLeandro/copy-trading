@@ -1,0 +1,11 @@
+# Core Web Automation & Scraping
+playwright>=1.42.0
+
+# Environment Variables & Configuration
+python-dotenv>=1.0.1
+
+# Terminal UI & Logging
+rich>=13.7.0
+
+# Testing (pure-logic unit tests, see tests/)
+pytest>=8.0.0
