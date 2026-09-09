@@ -4,11 +4,13 @@ from typing import Optional
 
 from playwright.sync_api import Page
 
-from src.config import TRADER_DETAILS_CSV_PATH, random_sleep
-from src.logger import log
-from src.scraper.csv_store import append_profiles_to_csv, init_csv_file, load_existing_trader_ids
-from src.scraper.extractors import scrape_trader_profile
-from src.scraper.navigation import (
+from src.common.config import random_sleep
+from src.common.csv_store import append_rows, init_csv_file, load_existing_ids
+from src.common.logger import log
+from src.brokers.fpmarkets.config import TRADER_DETAILS_CSV_PATH
+from src.brokers.fpmarkets.csv_schema import CSV_HEADERS, ID_FIELDS
+from src.brokers.fpmarkets.extractors import scrape_trader_profile
+from src.brokers.fpmarkets.navigation import (
     extract_cards_from_page,
     get_leaders_container,
     navigate_to_leaders,
@@ -24,8 +26,8 @@ def scrape_all_leader_profiles(page: Page, max_pages: Optional[int] = None) -> i
     3. Checks existing CSV first; skips any already-scraped traders to avoid redundant requests.
     4. Appends each trader record immediately to CSV and flushes to disk.
     """
-    init_csv_file(TRADER_DETAILS_CSV_PATH)
-    seen_ids = load_existing_trader_ids(TRADER_DETAILS_CSV_PATH)
+    init_csv_file(TRADER_DETAILS_CSV_PATH, CSV_HEADERS)
+    seen_ids = load_existing_ids(TRADER_DETAILS_CSV_PATH, ID_FIELDS)
     log.info(f"Loaded {len(seen_ids)} existing trader records from {TRADER_DETAILS_CSV_PATH.name}")
 
     # Tab 1: Initialize Leaders table & paginator
@@ -93,7 +95,7 @@ def scrape_all_leader_profiles(page: Page, max_pages: Optional[int] = None) -> i
                 }
 
                 # Save immediately to CSV
-                append_profiles_to_csv([full_record], TRADER_DETAILS_CSV_PATH)
+                append_rows([full_record], TRADER_DETAILS_CSV_PATH, CSV_HEADERS)
                 seen_ids.add(tid)
                 if purl:
                     seen_ids.add(purl)

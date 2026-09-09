@@ -1,4 +1,4 @@
-from src.scraper.navigation import parse_page_info
+from src.brokers.fpmarkets.navigation import parse_page_info
 
 
 class _FakeLabelElement:

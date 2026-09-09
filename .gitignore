@@ -2,7 +2,7 @@
 .env
 .env.*
 !.env.example
-auth_state.json
+auth_state/
 
 # Python
 __pycache__/

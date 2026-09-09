@@ -1,33 +1,18 @@
-import random
-import time
-from playwright.sync_api import sync_playwright, Page, Locator
+from playwright.sync_api import Page
 
-from src.config import (
-    LOGIN_URL,
+from src.common.browser_session import get_authenticated_session as _get_authenticated_session, human_type
+from src.common.config import HEADLESS, random_sleep
+from src.common.logger import log
+from src.brokers.fpmarkets.config import (
+    AUTH_STATE_PATH,
     FPMARKETS_EMAIL,
     FPMARKETS_PASSWORD,
     FPMARKETS_PIN,
-    HEADLESS,
-    MIN_DELAY_MS,
-    MAX_DELAY_MS,
-    AUTH_STATE_PATH,
+    HOME_URL,
+    LOGIN_URL,
     SCREENSHOTS_DIR,
     validate_credentials,
-    random_sleep,
-    get_random_delay_ms,
 )
-
-from src.logger import log
-
-
-def human_type(locator: Locator, text: str):
-    """Types text character by character with randomized human-like delays."""
-    locator.fill("")
-    for char in text:
-        locator.type(char, delay=random.randint(60, 180))
-        # Occasional micro-pause between typing chunks (realistic human typing)
-        if random.random() < 0.15:
-            time.sleep(random.uniform(0.1, 0.25))
 
 
 def perform_login(page: Page) -> bool:
@@ -139,69 +124,14 @@ def perform_login(page: Page) -> bool:
 def get_authenticated_session(force_fresh_login: bool = False):
     """
     Launches a Playwright browser session with randomized timing and anti-bot arguments.
-    If auth_state.json exists and force_fresh_login is False, reuses session cookies.
-    Otherwise, performs a fresh login and saves state.
+    If a saved FP Markets session exists and force_fresh_login is False, reuses it.
+    Otherwise, performs a fresh login and saves the new session state.
     """
-    playwright = sync_playwright().start()
-
-    # Browser launch arguments with anti-detection flags
-    launch_args = [
-        "--disable-blink-features=AutomationControlled",
-        "--start-maximized",
-        "--no-sandbox",
-    ]
-
-    try:
-        browser = playwright.chromium.launch(headless=HEADLESS, args=launch_args)
-    except Exception as e:
-        if "Executable doesn't exist" in str(e) or "playwright install" in str(e):
-            log.warning("Playwright Chromium browser binary not found. Downloading automatically...")
-            import subprocess
-            import sys
-            subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
-            log.success("✓ Chromium browser installed successfully!")
-            browser = playwright.chromium.launch(headless=HEADLESS, args=launch_args)
-        else:
-            raise e
-
-    # Check if saved auth session exists
-    if not force_fresh_login and AUTH_STATE_PATH.exists():
-        log.info(f"Found existing session at {AUTH_STATE_PATH.name}. Reusing auth state...")
-        context = browser.new_context(
-            storage_state=str(AUTH_STATE_PATH),
-            viewport={"width": 1920, "height": 1080},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        )
-        page = context.new_page()
-        page.goto("https://portal.fpmarkets.com/", wait_until="domcontentloaded")
-        random_sleep(1500, 3000)
-
-        # Check if session is still valid (not bounced back to login)
-        if "/login" not in page.url:
-            log.success(f"✓ Existing session is valid! URL: {page.url}")
-            return playwright, browser, context, page
-        else:
-            log.warning("Saved session expired. Reusing browser window for fresh login...")
-            AUTH_STATE_PATH.unlink(missing_ok=True)
-            context.clear_cookies()
-    else:
-        context = browser.new_context(
-            viewport={"width": 1920, "height": 1080},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        )
-        page = context.new_page()
-
-    login_success = perform_login(page)
-
-    if login_success:
-        # Save authenticated storage state
-        context.storage_state(path=str(AUTH_STATE_PATH))
-        log.success(f"✓ Authentication state saved to {AUTH_STATE_PATH.name}")
-        return playwright, browser, context, page
-    else:
-        log.error("Login failed. Browser session will remain open for inspection for 10 seconds...")
-        time.sleep(10)
-        context.close()
-        browser.close()
-        playwright.stop()
-        return None, None, None, None
+    return _get_authenticated_session(
+        auth_state_path=AUTH_STATE_PATH,
+        home_url=HOME_URL,
+        perform_login=perform_login,
+        is_session_valid=lambda page: "/login" not in page.url,
+        headless=HEADLESS,
+        force_fresh_login=force_fresh_login,
+    )

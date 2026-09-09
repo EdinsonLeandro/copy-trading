@@ -2,8 +2,8 @@ from typing import Any, Callable, Optional
 
 from playwright.sync_api import Page
 
-from src.config import random_sleep
-from src.logger import log
+from src.common.config import random_sleep
+from src.common.logger import log
 
 
 def evaluate_with_frame_fallback(
@@ -46,11 +46,10 @@ def wait_for_evaluate(
     Polls `evaluate_with_frame_fallback(page, js, is_sufficient)` up to `attempts`
     times, sleeping `interval_ms` between tries, until `is_sufficient` passes.
 
-    A DOM wrapper (e.g. the tab body) can exist well before Angular finishes
-    binding data into it, so checking for the wrapper's presence with
-    `wait_for_selector` is not proof the values inside are populated yet. This
-    instead re-checks the actual extracted values, the same way the Leaders
-    container polls for its cards (see `navigate_to_leaders`).
+    A DOM wrapper (e.g. the tab body) can exist well before a client-rendered
+    SPA finishes binding data into it, so checking for the wrapper's presence
+    with `wait_for_selector` is not proof the values inside are populated yet.
+    This instead re-checks the actual extracted values.
 
     Returns the last (possibly insufficient) result if it never passes.
     """
@@ -66,9 +65,10 @@ def wait_for_evaluate(
 
 def click_tab(detail_page: Page, tab_name: str, wait_selector: str) -> bool:
     """
-    Switches a trader profile page (Angular Material tabs) to the tab labeled
-    `tab_name`, using a human-like scroll/click/delay pattern to avoid bot
-    detection, then waits for `wait_selector` to confirm the tab rendered.
+    Switches a tabbed detail page (Angular Material-style `div[role='tab']`
+    tabs) to the tab labeled `tab_name`, using a human-like scroll/click/delay
+    pattern to avoid bot detection, then waits for `wait_selector` to confirm
+    the tab rendered.
     """
     try:
         tab_btn = detail_page.locator(f"div[role='tab']:has-text('{tab_name}')").first

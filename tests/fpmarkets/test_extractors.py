@@ -1,4 +1,4 @@
-from src.scraper.extractors import _parse_month_tick_label, compute_leverage_bar_dates
+from src.brokers.fpmarkets.extractors import _parse_month_tick_label, compute_leverage_bar_dates
 
 
 def test_parse_month_tick_label_valid():

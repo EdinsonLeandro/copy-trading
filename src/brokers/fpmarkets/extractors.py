@@ -1,15 +1,17 @@
 import calendar
 import json
 import re
+import time
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
 from playwright.sync_api import Page
 
-from src.config import random_sleep
-from src.logger import log
-from src.scraper.dom_utils import evaluate_with_frame_fallback, wait_for_evaluate
-from src.scraper.navigation import click_instruments_tab, click_trading_tab
+from src.common.config import DEBUG_SNAPSHOTS, random_sleep
+from src.common.logger import log
+from src.common.playwright_utils import evaluate_with_frame_fallback, wait_for_evaluate
+from src.brokers.fpmarkets.config import SCREENSHOTS_DIR
+from src.brokers.fpmarkets.navigation import click_instruments_tab, click_trading_tab
 
 _MONTH_ABBR_TO_NUM = {abbr.lower(): idx for idx, abbr in enumerate(calendar.month_abbr) if abbr}
 
@@ -18,10 +20,10 @@ _JS_INDICATORS_EXTRACTOR = """
         const data = {};
 
         // Top Header Summary (Return (total), Return (1D), Age (Days))
-        const overviewBlocks = document.querySelectorAll(".ta-overview__item, [class*='overview__item']");
+        const overviewBlocks = document.querySelectorAll("[class*='overview'][class*='item']");
         overviewBlocks.forEach(block => {
-            const valElem = block.querySelector(".ta-overview__value, [class*='overview__value']");
-            const lblElem = block.querySelector(".ta-overview__label, [class*='overview__label']");
+            const valElem = block.querySelector("[class*='overview'][class*='value']");
+            const lblElem = block.querySelector("[class*='overview'][class*='label']");
             if (valElem && lblElem) {
                 const val = valElem.textContent.trim();
                 const lbl = lblElem.textContent.trim().toLowerCase();
@@ -32,10 +34,15 @@ _JS_INDICATORS_EXTRACTOR = """
             }
         });
 
-        const blocks = document.querySelectorAll(".ta-indicators_block, [class*='indicators_block']");
+        // Matched by substring rather than a fixed "_block"/"__block" class name: the
+        // site has been observed serving both single- and double-underscore BEM class
+        // variants (ta-indicators_block vs ta-indicators__block) for this same
+        // component, so pin on "indicators" + "block" both being present instead of
+        // the exact separator.
+        const blocks = document.querySelectorAll("[class*='indicators'][class*='block']");
         blocks.forEach(block => {
-            const valElem = block.querySelector(".ta-indicators_value, .ta-indicators__value, [class*='indicators_value']");
-            const lblElem = block.querySelector(".ta-indicators_label, .ta-indicators__label, [class*='indicators_label']");
+            const valElem = block.querySelector("[class*='indicators'][class*='value']");
+            const lblElem = block.querySelector("[class*='indicators'][class*='label']");
             if (valElem && lblElem) {
                 const val = valElem.textContent.trim();
                 const lbl = lblElem.textContent.trim().toLowerCase();
@@ -74,8 +81,15 @@ _JS_INDICATORS_EXTRACTOR = """
 # month labels (in DOM order) rather than reading rendered bar heights.
 _JS_MONTHLY_CHART_EXTRACTOR = """
     () => {
-        const chartRoot = document.querySelector("#apexchartsmonthlyChartId, .ta-chart svg.apexcharts-svg")
-            || document.querySelector("svg.apexcharts-svg");
+        // The Return tab renders multiple ApexCharts instances at once (the main
+        // area chart "apexchartsincomeChartId", its range-selector mini chart
+        // "apexchartsscrollBarChartId", and the bar chart we actually want,
+        // "apexchartsmonthlyChartId"), all present in the DOM simultaneously. A
+        // combined selector like "#apexchartsmonthlyChartId, .ta-chart svg" would
+        // return whichever of those matches first in DOM order -- not necessarily
+        // the monthly one -- so this must resolve the monthly chart's container by
+        // ID alone, with no generic fallback that could grab a different chart.
+        const chartRoot = document.querySelector("#apexchartsmonthlyChartId");
         if (!chartRoot) return {};
 
         const labels = Array.from(chartRoot.querySelectorAll(".apexcharts-xaxis-label tspan"))
@@ -123,9 +137,15 @@ _JS_MAX_PROFIT_DRAWDOWN_EXTRACTOR = """
 
 _JS_LEVERAGE_CHART_EXTRACTOR = """
     () => {
-        const seriesG = document.querySelector(
-            "g.apexcharts-bar-series[seriesName='chartxusedleveragelabel'], g[seriesname='chartxusedleveragelabel']"
-        );
+        // The series' actual attribute value has been observed as both
+        // "chartxusedleveragelabel" and "chartxusedLeveragexlabel" (casing/"x"
+        // separators vary), so match loosely on "leverage" appearing in the
+        // attribute rather than pinning the exact string. It also lives on the
+        // inner <g class="apexcharts-series"> (bearing seriesName), not the outer
+        // <g class="apexcharts-bar-series"> wrapper -- so search any g[seriesName].
+        const seriesG = Array.from(
+            document.querySelectorAll("g[seriesName], g[seriesname]")
+        ).find(g => /leverage/i.test(g.getAttribute("seriesName") || g.getAttribute("seriesname") || ""));
         if (!seriesG) return { bars: [], ticks: [] };
 
         const chartRoot = seriesG.closest("svg.apexcharts-svg") || seriesG.ownerSVGElement;
@@ -296,6 +316,32 @@ def _has_bars(payload: Dict[str, Any]) -> bool:
     return bool(payload and payload.get("bars"))
 
 
+def _dump_debug_snapshot(detail_page: Page, tag: str, profile_url: str) -> None:
+    """
+    Saves a screenshot + full HTML of `detail_page` under SCREENSHOTS_DIR when an
+    expected extraction comes back empty after exhausting the poll window, so a
+    failure can be diagnosed from what the bot actually saw instead of guessing.
+
+    Gated behind DEBUG_SNAPSHOTS (see config.py) since this runs on every profile
+    that comes back empty, which is noisy once the extractors are known-good.
+    """
+    if not DEBUG_SNAPSHOTS:
+        return
+
+    try:
+        SCREENSHOTS_DIR.mkdir(exist_ok=True)
+        id_match = re.search(r"ratings/(\d+)", profile_url)
+        trader_id = id_match.group(1) if id_match else "unknown"
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        base = SCREENSHOTS_DIR / f"debug_{tag}_{trader_id}_{stamp}"
+
+        detail_page.screenshot(path=str(base.with_suffix(".png")), full_page=True)
+        base.with_suffix(".html").write_text(detail_page.content(), encoding="utf-8")
+        log.warning(f"Debug snapshot saved for {tag} (trader {trader_id}): {base.name}.png/.html")
+    except Exception as e:
+        log.debug(f"Failed to save debug snapshot ({tag}): {e}")
+
+
 def scrape_trader_profile(detail_page: Page, profile_url: str) -> Dict[str, str]:
     """
     Navigates to a trader's profile URL on Tab 2 and extracts 'Return' tab metrics:
@@ -320,9 +366,12 @@ def scrape_trader_profile(detail_page: Page, profile_url: str) -> Dict[str, str]
         except Exception:
             pass
 
-        metrics.update(
-            wait_for_evaluate(detail_page, _JS_INDICATORS_EXTRACTOR, _has_period_return_data)
+        period_metrics = wait_for_evaluate(
+            detail_page, _JS_INDICATORS_EXTRACTOR, _has_period_return_data, attempts=20, interval_ms=500
         )
+        metrics.update(period_metrics)
+        if not _has_period_return_data(period_metrics):
+            _dump_debug_snapshot(detail_page, "return_period", profile_url)
 
         try:
             detail_page.wait_for_selector("path.apexcharts-bar-area", timeout=8000)
@@ -340,9 +389,12 @@ def scrape_trader_profile(detail_page: Page, profile_url: str) -> Dict[str, str]
             # Re-run the same indicator extractor: the Trading tab's blocks share the
             # ta-indicators_block structure, just with different labels (Sharpe ratio,
             # Recovery factor, etc.) that are already handled above.
-            metrics.update(
-                wait_for_evaluate(detail_page, _JS_INDICATORS_EXTRACTOR, _has_trading_indicator_data)
+            trading_metrics = wait_for_evaluate(
+                detail_page, _JS_INDICATORS_EXTRACTOR, _has_trading_indicator_data, attempts=20, interval_ms=500
             )
+            metrics.update(trading_metrics)
+            if not _has_trading_indicator_data(trading_metrics):
+                _dump_debug_snapshot(detail_page, "trading_indicators", profile_url)
 
             max_pd_data = evaluate_with_frame_fallback(detail_page, _JS_MAX_PROFIT_DRAWDOWN_EXTRACTOR)
             if max_pd_data:

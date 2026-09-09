@@ -4,9 +4,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from playwright.sync_api import Frame, Page
 
-from src.config import COPY_TRADING_URL, SOCIAL_RATINGS_BASE_URL, random_sleep
-from src.logger import log
-from src.scraper.dom_utils import click_tab
+from src.common.config import random_sleep
+from src.common.logger import log
+from src.common.playwright_utils import click_tab
+from src.brokers.fpmarkets.config import COPY_TRADING_URL, SOCIAL_RATINGS_BASE_URL
 
 
 def get_leaders_container(page: Page) -> Tuple[Any, Optional[Frame]]:

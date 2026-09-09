@@ -2,7 +2,7 @@ from datetime import datetime
 from rich.console import Console
 from rich.text import Text
 
-from src.config import BASE_DIR
+from src.common.config import BASE_DIR
 
 LOGS_DIR = BASE_DIR / "logs"
 
@@ -27,18 +27,27 @@ class CustomLogger:
     def __init__(self):
         self.console = Console()
         self._files_ready = False
+        self._label = None
         self.run_log_file = None
         self.latest_log_file = None
+
+    def set_label(self, label: str) -> None:
+        """Tags subsequent log filenames with `label` (e.g. the active broker
+        name) if called before the first log write. A no-op after that point,
+        since the run's log file has already been created."""
+        if not self._files_ready:
+            self._label = label
 
     def _ensure_log_files(self):
         if self._files_ready:
             return
         LOGS_DIR.mkdir(exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.run_log_file = LOGS_DIR / f"run_{timestamp}.log"
-        self.latest_log_file = LOGS_DIR / "latest.log"
+        suffix = f"_{self._label}" if self._label else ""
+        self.run_log_file = LOGS_DIR / f"run{suffix}_{timestamp}.log"
+        self.latest_log_file = LOGS_DIR / f"latest{suffix}.log"
 
-        header = f"=== FP Markets Copy Trading Log - Session Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===\n"
+        header = f"=== Copy Trading Scraper Log - Session Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===\n"
         with open(self.run_log_file, "a", encoding="utf-8") as f:
             f.write(header)
         with open(self.latest_log_file, "w", encoding="utf-8") as f:

@@ -1,43 +1,55 @@
-# FP Markets Web Scraper & Data Analysis
+# Copy Trading Leaderboard Scraper
 
-An automated, robust web scraper and data extractor for the FP Markets Portal built with **Python 3.11** and **Playwright**.
+An automated, multi-broker web scraper for copy-trading leaderboards, built with **Python 3.11** and **Playwright**.
 
 > [!IMPORTANT]
-> **What this project is (and isn't):** despite the repo name "copy-trading", this tool does **not** place trades, manage positions, or execute copy-trading on your behalf. It automates a browser to log into the FP Markets portal and **scrape publicly-visible statistics about copy-trading "leaders"** (traders other users can choose to copy) — returns, drawdown, leverage, instruments traded, etc. — into a local CSV file for offline analysis. There is no order execution, no broker trading API integration, and no capital at risk from running it.
+> **What this project is (and isn't):** despite the repo name "copy-trading", this tool does **not** place trades, manage positions, or execute copy-trading on your behalf. It automates a browser to log into each broker's portal and **scrape publicly-visible statistics about copy-trading "leaders"** (traders other users can choose to copy) — returns, drawdown, leverage, instruments traded, etc. — into local CSV files for offline analysis. There is no order execution, no broker trading API integration, and no capital at risk from running it.
 
 ---
 
 ## 📁 Project Structure
 
+The codebase is split into a broker-agnostic **common** layer and one **broker package per platform**, since each broker has its own website, its own login/2FA flow, and its own trader-data schema — only the underlying browser-automation plumbing is shared.
+
 ```text
 copy-trading/
-├── .env.example          # Environment variables template
-├── .env                  # Your secret credentials (gitignored)
-├── .gitignore             # Git exclusion rules
-├── requirements.txt       # Python dependencies
-├── pytest.ini             # Pytest configuration
-├── main.py                # Application entry point
-├── README.md               # Project documentation
-├── logs/                    # Auto-captured run logs (e.g. run_YYYYMMDD_HHMMSS.log, latest.log)
-├── screenshots/             # Auto-captured screenshots on login/errors
-├── data/                    # Extracted CSV datasets (e.g. trader_details.csv)
-├── tests/                   # Unit tests for the pure-logic pieces (pytest)
-│   ├── test_csv_store.py
-│   ├── test_extractors.py
-│   └── test_navigation.py
+├── .env.example            # Environment variables template
+├── .env                     # Your secret credentials (gitignored)
+├── .gitignore
+├── requirements.txt
+├── pytest.ini
+├── main.py                  # Entry point: python main.py --broker <name>
+├── README.md
+├── logs/                    # Auto-captured run logs (per broker, via log.set_label)
+├── screenshots/<broker>/    # Auto-captured screenshots on login/errors, per broker
+├── data/<broker>/           # Extracted CSV datasets, per broker
+├── auth_state/<broker>.json # Saved login session per broker (gitignored)
+├── tests/
+│   ├── common/              # Tests for the shared infrastructure
+│   └── fpmarkets/           # Tests for the FP Markets scraper
 └── src/
-    ├── __init__.py
-    ├── config.py            # Settings, env variable loader, path constants
-    ├── logger.py            # Leveled console + file logger (info/success/warning/error/debug)
-    ├── auth.py              # Playwright login, PIN handler, and session persistence
-    └── scraper/             # Copy Trading leaderboard scraper, split by responsibility
-        ├── __init__.py       # Public API re-exports
-        ├── csv_store.py      # CSV schema + read/write/dedup persistence
-        ├── dom_utils.py      # Shared DOM helpers: frame-fallback JS eval, tab clicking
-        ├── navigation.py     # Leaders list navigation, pagination, card extraction
-        ├── extractors.py     # Per-tab JS extraction scripts + profile scraping
-        └── orchestrator.py   # Top-level scrape_all_leader_profiles() loop
+    ├── common/               # Broker-agnostic infrastructure
+    │   ├── config.py          # BASE_DIR, HEADLESS, DEBUG_SNAPSHOTS, delay settings, ensure_directories
+    │   ├── logger.py          # Leveled console + file logger (info/success/warning/error/debug)
+    │   ├── browser_session.py # Playwright launch, anti-detection args, storage-state reuse, human_type
+    │   ├── playwright_utils.py# Frame-fallback JS eval, poll-until-populated, generic tab clicking
+    │   └── csv_store.py       # Generic CSV init/append/dedup, parameterized by each broker's own schema
+    │
+    └── brokers/
+        ├── fpmarkets/         # FP Markets: reference implementation
+        │   ├── config.py       # Credentials, URLs, per-broker paths, validate_credentials()
+        │   ├── auth.py         # FP Markets login flow (built on common/browser_session.py)
+        │   ├── csv_schema.py   # This broker's CSV_HEADERS + ID_FIELDS (dedup key columns)
+        │   ├── navigation.py   # Leaders list navigation, pagination, card extraction
+        │   ├── extractors.py   # Per-tab JS extraction scripts + profile scraping
+        │   ├── orchestrator.py # Top-level scrape_all_leader_profiles() loop
+        │   └── run.py          # Wires auth + orchestrator together for main.py
+        │
+        └── binance/            # Stub — not implemented yet; follow fpmarkets/'s shape
+            └── run.py
 ```
+
+Adding a new broker (e.g. Binance, OKX) means adding a new `src/brokers/<name>/` package with the same shape as `fpmarkets/`, and registering its `run()` in `main.py`'s `BROKER_RUNNERS` dict. Nothing in `src/common/` should ever need to know a specific broker's name, URLs, or data fields — if it does, that logic belongs in the broker package instead.
 
 ---
 
@@ -88,55 +100,57 @@ playwright install chromium
 
 ### 3. Configure Credentials
 
-1. Open the [`.env`](file:///.env) file in the root directory.
-2. Fill in your FP Markets login credentials:
+1. Copy `.env.example` to `.env` in the root directory.
+2. Fill in your FP Markets login credentials (each broker gets its own section in `.env` as more are added):
 
 ```env
-# FP Markets Credentials
-FPMARKETS_EMAIL=your_actual_email@example.com
-FPMARKETS_PASSWORD=your_actual_password
-FPMARKETS_PIN=your_account_pin
-
-# Playwright & Anti-Detection Settings
+# --- Broker-agnostic settings ---
 HEADLESS=False
 MIN_DELAY_MS=300
 MAX_DELAY_MS=800
+DEBUG_SNAPSHOTS=False
+
+# --- FP Markets credentials ---
+FPMARKETS_EMAIL=your_actual_email@example.com
+FPMARKETS_PASSWORD=your_actual_password
+FPMARKETS_PIN=your_account_pin
 ```
 
 > [!NOTE]
 > `HEADLESS=False` ensures you can visually watch the browser navigate, fill the fields, and handle any 2FA/PIN prompts if requested by the portal.
 
 > [!WARNING]
-> `.env` and the generated `auth_state.json` (saved login session/cookies) contain real credentials/session data in plaintext. Both are gitignored, but keep them out of any screenshots, logs, or shared copies of this folder.
+> `.env` and the generated `auth_state/<broker>.json` files (saved login sessions/cookies) contain real credentials/session data in plaintext. Both are gitignored, but keep them out of any screenshots, logs, or shared copies of this folder.
 
 ---
 
-### 4. Run the Login & Scraper
+### 4. Run a Scraper
 
-Execute the main script:
 ```bash
-python main.py
+python main.py --broker fpmarkets
 ```
 
+Use `--force-fresh-login` to ignore any saved session and log in again. Running `python main.py --broker binance` currently exits with a clear "not implemented yet" message — see the Project Structure section above for how to build it out.
+
 ### Key Features
-* **Session Persistence (`auth_state.json`)**: Once logged in successfully, your session cookies and storage state are saved. Subsequent runs will bypass the login page and load the dashboard directly!
-* **Error & 2FA Detection**: Automatically captures error messages and screenshots into `screenshots/` if authentication fails or if a PIN is requested.
+* **Session Persistence (`auth_state/<broker>.json`)**: Once logged in successfully, your session cookies and storage state are saved per broker. Subsequent runs bypass the login page and load the dashboard directly.
+* **Error & 2FA Detection**: Automatically captures error messages and screenshots into `screenshots/<broker>/` if authentication fails or if a PIN is requested.
 * **Anti-Bot Friendly**: Runs with standard user agents and browser flags to prevent automated bot detection.
 
 ---
 
 ## 🧪 Running Tests
 
-Unit tests cover the pure-logic pieces (CSV persistence, pagination-label parsing, leverage-chart date reconstruction) that don't require a live browser:
+Unit tests cover the pure-logic pieces (generic CSV persistence, pagination-label parsing, leverage-chart date reconstruction) that don't require a live browser:
 
 ```bash
 pytest
 ```
 
-Browser-driven scraping/login logic is not covered by automated tests — verify those manually by running `python main.py` against the live portal.
+Browser-driven scraping/login logic is not covered by automated tests — verify those manually by running `python main.py --broker <name>` against the live portal.
 
 ---
 
 ## 📝 Logs
 
-Every run writes a leveled log (`INFO` / `SUCCESS` / `WARNING` / `ERROR` / `DEBUG`) to both the console (color-coded via `rich`) and to `logs/run_<timestamp>.log` / `logs/latest.log`.
+Every run writes a leveled log (`INFO` / `SUCCESS` / `WARNING` / `ERROR` / `DEBUG`) to both the console (color-coded via `rich`) and to `logs/run_<broker>_<timestamp>.log` / `logs/latest_<broker>.log`.
