@@ -12,8 +12,6 @@ DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
-DEFAULT_VIEWPORT = {"width": 1920, "height": 1080}
-
 
 def human_type(locator: Locator, text: str) -> None:
     """Types text character by character with randomized human-like delays."""
@@ -23,6 +21,25 @@ def human_type(locator: Locator, text: str) -> None:
         # Occasional micro-pause between typing chunks (realistic human typing)
         if random.random() < 0.15:
             time.sleep(random.uniform(0.1, 0.25))
+
+
+def maximize_window(page: Page) -> None:
+    """Force-maximizes the OS browser window via CDP.
+
+    `--start-maximized` alone is unreliable once combined with `viewport=None` +
+    a freshly-opened `new_page()`: the window can stay at its default launch size
+    instead of adopting the full screen, especially on Windows. CDP's
+    `Browser.setWindowBounds` is the reliable way to force it.
+    """
+    try:
+        cdp = page.context.new_cdp_session(page)
+        window_info = cdp.send("Browser.getWindowForTarget")
+        cdp.send(
+            "Browser.setWindowBounds",
+            {"windowId": window_info["windowId"], "bounds": {"windowState": "maximized"}},
+        )
+    except Exception as e:
+        log.debug(f"Could not force-maximize browser window: {e}")
 
 
 def launch_browser(playwright: Playwright, headless: bool = HEADLESS) -> Browser:
@@ -70,10 +87,11 @@ def get_authenticated_session(
         log.info(f"Found existing session at {auth_state_path.name}. Reusing auth state...")
         context = browser.new_context(
             storage_state=str(auth_state_path),
-            viewport=DEFAULT_VIEWPORT,
+            viewport=None,
             user_agent=DEFAULT_USER_AGENT,
         )
         page = context.new_page()
+        maximize_window(page)
         page.goto(home_url, wait_until="domcontentloaded")
         random_sleep(1500, 3000)
 
@@ -85,8 +103,9 @@ def get_authenticated_session(
             auth_state_path.unlink(missing_ok=True)
             context.clear_cookies()
     else:
-        context = browser.new_context(viewport=DEFAULT_VIEWPORT, user_agent=DEFAULT_USER_AGENT)
+        context = browser.new_context(viewport=None, user_agent=DEFAULT_USER_AGENT)
         page = context.new_page()
+        maximize_window(page)
 
     login_success = perform_login(page)
 
