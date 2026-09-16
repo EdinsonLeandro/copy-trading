@@ -30,6 +30,8 @@ class CustomLogger:
         self._label = None
         self.run_log_file = None
         self.latest_log_file = None
+        self._run_fh = None
+        self._latest_fh = None
 
     def set_label(self, label: str) -> None:
         """Tags subsequent log filenames with `label` (e.g. the active broker
@@ -48,18 +50,20 @@ class CustomLogger:
         self.latest_log_file = LOGS_DIR / f"latest{suffix}.log"
 
         header = f"=== Copy Trading Scraper Log - Session Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===\n"
-        with open(self.run_log_file, "a", encoding="utf-8") as f:
-            f.write(header)
-        with open(self.latest_log_file, "w", encoding="utf-8") as f:
-            f.write(header)
+        self._run_fh = open(self.run_log_file, "a", encoding="utf-8")
+        self._latest_fh = open(self.latest_log_file, "w", encoding="utf-8")
+        self._run_fh.write(header)
+        self._run_fh.flush()
+        self._latest_fh.write(header)
+        self._latest_fh.flush()
         self._files_ready = True
 
     def _write_to_files(self, line: str):
         self._ensure_log_files()
-        with open(self.run_log_file, "a", encoding="utf-8") as f:
-            f.write(line)
-        with open(self.latest_log_file, "a", encoding="utf-8") as f:
-            f.write(line)
+        self._run_fh.write(line)
+        self._run_fh.flush()
+        self._latest_fh.write(line)
+        self._latest_fh.flush()
 
     def _log(self, level: str, message: str):
         style = _LEVEL_STYLES.get(level, "")

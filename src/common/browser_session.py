@@ -107,7 +107,14 @@ def get_authenticated_session(
         page = context.new_page()
         maximize_window(page)
 
-    login_success = perform_login(page)
+    try:
+        login_success = perform_login(page)
+    except Exception:
+        log.error("perform_login raised an exception. Closing browser session...")
+        context.close()
+        browser.close()
+        playwright.stop()
+        raise
 
     if login_success:
         auth_state_path.parent.mkdir(parents=True, exist_ok=True)

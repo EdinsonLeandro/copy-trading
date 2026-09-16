@@ -16,10 +16,16 @@ BINANCE_PASSWORD = os.getenv("BINANCE_PASSWORD", "").strip()
 # Target URLs
 LOGIN_URL = "https://accounts.binance.com/en/login"
 HOME_URL = LOGIN_URL
+PORTFOLIO_BASE_URL = "https://www.binance.com"
+COPY_TRADING_URL = "https://www.binance.com/en/copy-trading"
 
 # How long to pause after submitting the password so the account owner can
 # approve the "Security Verification" app-push prompt on their phone.
 SECURITY_VERIFICATION_WAIT_SECONDS = 30
+
+# How long to pause after submitting the email so a manual captcha (Binance
+# sometimes shows one at this step) can be solved before typing the password.
+EMAIL_SUBMIT_WAIT_SECONDS = 30
 
 # Paths (namespaced under the shared common/ directories by broker name)
 DATA_DIR = _DATA_DIR / BROKER_NAME
@@ -27,7 +33,12 @@ SCREENSHOTS_DIR = _SCREENSHOTS_DIR / BROKER_NAME
 AUTH_STATE_PATH = _AUTH_STATE_DIR / f"{BROKER_NAME}.json"
 
 TRADER_DETAILS_CSV_PATH = DATA_DIR / "trader_details.csv"
-PROFILES_CSV_PATH = TRADER_DETAILS_CSV_PATH
+
+# Phase 1 output: just the portfolio (trader) profile URLs discovered while
+# paginating the leaderboard. Kept separate from TRADER_DETAILS_CSV_PATH since
+# that file is for the (future) per-profile detail scrape, a distinct resumable
+# phase that reads this file as its input list.
+PORTFOLIO_URLS_CSV_PATH = DATA_DIR / "portfolio_urls.csv"
 
 
 def ensure_directories() -> None:

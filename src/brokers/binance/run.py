@@ -2,7 +2,13 @@ from rich.panel import Panel
 
 from src.common.logger import log
 from src.brokers.binance.auth import get_authenticated_session
-from src.brokers.binance.config import BINANCE_EMAIL, ensure_directories, validate_credentials
+from src.brokers.binance.config import (
+    BINANCE_EMAIL,
+    PORTFOLIO_URLS_CSV_PATH,
+    ensure_directories,
+    validate_credentials,
+)
+from src.brokers.binance.orchestrator import scrape_all_portfolio_urls
 
 
 def run(force_fresh_login: bool = False) -> None:
@@ -33,10 +39,17 @@ def run(force_fresh_login: bool = False) -> None:
         raise SystemExit(1)
 
     try:
-        log.success("🎉 Authentication successful!")
-        log.warning(
-            "Leaderboard scraping is not implemented yet. "
-            "Session was established and saved for reuse."
+        log.success("🎉 Authentication successful! Collecting Copy Trading portfolio URLs...")
+
+        total_saved = scrape_all_portfolio_urls(page)
+
+        log.print(
+            Panel.fit(
+                f"[bold green]Portfolio URL Collection Complete![/bold green]\n"
+                f"[cyan]New URLs Saved:[/cyan] [yellow]{total_saved}[/yellow]\n"
+                f"[cyan]Output CSV File:[/cyan] [green]{PORTFOLIO_URLS_CSV_PATH}[/green]",
+                border_style="green",
+            )
         )
 
         log.info("Press Enter to close browser session...")

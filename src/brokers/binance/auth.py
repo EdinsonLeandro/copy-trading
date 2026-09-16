@@ -9,6 +9,7 @@ from src.brokers.binance.config import (
     AUTH_STATE_PATH,
     BINANCE_EMAIL,
     BINANCE_PASSWORD,
+    EMAIL_SUBMIT_WAIT_SECONDS,
     HOME_URL,
     LOGIN_URL,
     SCREENSHOTS_DIR,
@@ -62,6 +63,12 @@ def perform_login(page: Page) -> bool:
 
     log.info("Submitting email...")
     page.locator(_SUBMIT_BUTTON_SELECTOR).first.click()
+
+    log.warning(
+        f"Waiting {EMAIL_SUBMIT_WAIT_SECONDS}s in case a captcha appears "
+        "(solve it manually if so)..."
+    )
+    time.sleep(EMAIL_SUBMIT_WAIT_SECONDS)
 
     log.info("Entering password with human-like typing...")
     password_input = page.locator("#password-input")

@@ -1,5 +1,5 @@
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from playwright.sync_api import Page
@@ -91,7 +91,7 @@ def scrape_all_leader_profiles(page: Page, max_pages: Optional[int] = None) -> i
                     "profile_url": purl,
                     "page_number": display_page,
                     **profile_metrics,
-                    "scraped_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                    "scraped_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
                 }
 
                 # Save immediately to CSV
