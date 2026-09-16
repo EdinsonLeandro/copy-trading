@@ -58,6 +58,17 @@ TRADER_DETAILS_CSV_HEADERS = [
     # "fields" is a generic label->value map rather than fixed columns,
     # since different position types are expected to show different fields.
     "position_history",
+    # True when the portfolio hides its trading history entirely (Binance's
+    # own "this is a 'private' portfolio" empty state) - lets an empty
+    # position_history be told apart from a trader with genuinely zero
+    # closed positions.
+    "is_private_portfolio",
+    # Every "Copy Traders" row across all pages (JSON array), e.g.
+    # [{"User ID": "Tan***ian", "Copy Margin Balance": "64.74 USDT",
+    # "Total PNL": "+5.89 USDT", "Total ROI": "+9.81%", "Duration": "27
+    # Days"}, ...]. Keys come from the table's own headers rather than a
+    # fixed schema.
+    "copy_traders",
     "scraped_at",
 ]
 

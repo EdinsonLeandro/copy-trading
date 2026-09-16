@@ -5,12 +5,12 @@ from src.common.config import HEADLESS, random_sleep
 from src.common.logger import log
 from src.brokers.fpmarkets.config import (
     AUTH_STATE_PATH,
+    DEBUG_DIR,
     FPMARKETS_EMAIL,
     FPMARKETS_PASSWORD,
     FPMARKETS_PIN,
     HOME_URL,
     LOGIN_URL,
-    SCREENSHOTS_DIR,
     validate_credentials,
 )
 
@@ -69,7 +69,7 @@ def perform_login(page: Page) -> bool:
     if error_elem.is_visible() and error_elem.inner_text().strip():
         err_msg = error_elem.inner_text().strip()
         log.error(f"Login Failed: {err_msg}")
-        page.screenshot(path=str(SCREENSHOTS_DIR / "login_error.png"))
+        page.screenshot(path=str(DEBUG_DIR / "login_error.png"))
         return False
 
     # Check if PIN input appears
@@ -106,18 +106,18 @@ def perform_login(page: Page) -> bool:
         log.success(f"✓ Login Successful! Current URL: {page.url}")
 
         # Take a confirmation screenshot
-        page.screenshot(path=str(SCREENSHOTS_DIR / "dashboard_success.png"))
+        page.screenshot(path=str(DEBUG_DIR / "dashboard_success.png"))
         return True
     except Exception:
         log.warning(f"Current URL after wait: {page.url}")
-        page.screenshot(path=str(SCREENSHOTS_DIR / "login_state.png"))
+        page.screenshot(path=str(DEBUG_DIR / "login_state.png"))
 
         # If no longer on /login, consider it success
         if "/login" not in page.url:
             log.success("✓ Login Successful (redirected)!")
             return True
         else:
-            log.error("Could not verify successful login. Check screenshots/login_state.png")
+            log.error("Could not verify successful login. Check debug/fpmarkets/login_state.png")
             return False
 
 

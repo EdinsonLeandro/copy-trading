@@ -1,3 +1,4 @@
+import sys
 from datetime import datetime
 from rich.console import Console
 from rich.text import Text
@@ -13,6 +14,40 @@ _LEVEL_STYLES = {
     "WARNING": "yellow",
     "ERROR": "bold red",
 }
+
+
+class _StderrTee:
+    """Duplicates everything written to stderr into the run's log files.
+
+    Uncaught exception tracebacks and third-party warnings (Playwright,
+    etc.) write straight to stderr, bypassing log.debug/info/error/print
+    entirely - without this, a crash's traceback shows up in the terminal
+    but never in the log file. stdout is deliberately left alone: the rich
+    Console used by log.*/log.print already writes there, and its output
+    is separately captured (as clean plaintext) by _write_to_files, so
+    teeing stdout too would just duplicate every log line.
+    """
+
+    def __init__(self, original, log_paths):
+        self._original = original
+        self._log_paths = log_paths
+
+    def write(self, data):
+        self._original.write(data)
+        if not data:
+            return
+        for path in self._log_paths:
+            try:
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write(data)
+            except Exception:
+                pass
+
+    def flush(self):
+        self._original.flush()
+
+    def isatty(self):
+        return getattr(self._original, "isatty", lambda: False)()
 
 
 class CustomLogger:
@@ -56,6 +91,10 @@ class CustomLogger:
         self._run_fh.flush()
         self._latest_fh.write(header)
         self._latest_fh.flush()
+
+        if not isinstance(sys.stderr, _StderrTee):
+            sys.stderr = _StderrTee(sys.stderr, [self.run_log_file, self.latest_log_file])
+
         self._files_ready = True
 
     def _write_to_files(self, line: str):

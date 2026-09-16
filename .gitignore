@@ -17,7 +17,7 @@ venv/
 ENV/
 
 # Playwright & Data Artifacts
-screenshots/
+debug/
 downloads/
 data/
 *.log

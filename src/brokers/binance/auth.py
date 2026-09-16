@@ -9,10 +9,10 @@ from src.brokers.binance.config import (
     AUTH_STATE_PATH,
     BINANCE_EMAIL,
     BINANCE_PASSWORD,
+    DEBUG_DIR,
     EMAIL_SUBMIT_WAIT_SECONDS,
     HOME_URL,
     LOGIN_URL,
-    SCREENSHOTS_DIR,
     SECURITY_VERIFICATION_WAIT_SECONDS,
     validate_credentials,
 )
@@ -98,17 +98,17 @@ def perform_login(page: Page) -> bool:
     try:
         page.wait_for_url(lambda url: "/login" not in url, timeout=15000)
         log.success(f"✓ Login Successful! Current URL: {page.url}")
-        page.screenshot(path=str(SCREENSHOTS_DIR / "dashboard_success.png"))
+        page.screenshot(path=str(DEBUG_DIR / "dashboard_success.png"))
         return True
     except Exception:
         log.warning(f"Current URL after wait: {page.url}")
-        page.screenshot(path=str(SCREENSHOTS_DIR / "login_state.png"))
+        page.screenshot(path=str(DEBUG_DIR / "login_state.png"))
 
         if "/login" not in page.url:
             log.success("✓ Login Successful (redirected)!")
             return True
         else:
-            log.error("Could not verify successful login. Check screenshots/login_state.png")
+            log.error("Could not verify successful login. Check debug/binance/login_state.png")
             return False
 
 

@@ -24,6 +24,8 @@ copy-trading/
 ├── screenshots/<broker>/    # Auto-captured screenshots on login/errors, per broker
 ├── data/<broker>/           # Extracted CSV datasets, per broker
 ├── auth_state/<broker>.json # Saved login session per broker (gitignored)
+├── scripts/
+│   └── test_binance_profile_extractor.py  # Dev-only sanity check for binance/extractors.py
 ├── tests/
 │   ├── common/              # Tests for the shared infrastructure
 │   └── fpmarkets/           # Tests for the FP Markets scraper
@@ -45,11 +47,17 @@ copy-trading/
         │   ├── orchestrator.py # Top-level scrape_all_leader_profiles() loop
         │   └── run.py          # Wires auth + orchestrator together for main.py
         │
-        └── binance/            # Stub — not implemented yet; follow fpmarkets/'s shape
-            └── run.py
+        └── binance/            # Binance: leaderboard URL collection is implemented;
+            ├── config.py        # per-profile detail scraping is still being built out
+            ├── auth.py          # Binance login flow (handles email/password + manual captcha/app-push waits)
+            ├── csv_schema.py    # PORTFOLIO_URLS_CSV_HEADERS/TRADER_DETAILS_CSV_HEADERS + ID fields
+            ├── navigation.py    # Copy Trading tab navigation, pagination, portfolio card extraction
+            ├── extractors.py    # Per-tab JS extraction scripts + profile scraping
+            ├── orchestrator.py  # scrape_all_portfolio_urls() loop (Phase 1: collect profile URLs)
+            └── run.py           # Wires auth + orchestrator together for main.py
 ```
 
-Adding a new broker (e.g. Binance, OKX) means adding a new `src/brokers/<name>/` package with the same shape as `fpmarkets/`, and registering its `run()` in `main.py`'s `BROKER_RUNNERS` dict. Nothing in `src/common/` should ever need to know a specific broker's name, URLs, or data fields — if it does, that logic belongs in the broker package instead.
+Adding a new broker (e.g. OKX) means adding a new `src/brokers/<name>/` package with the same shape as `fpmarkets/` or `binance/`, and registering its `run()` in `main.py`'s `BROKER_RUNNERS` dict. Nothing in `src/common/` should ever need to know a specific broker's name, URLs, or data fields — if it does, that logic belongs in the broker package instead.
 
 ---
 
@@ -101,7 +109,7 @@ playwright install chromium
 ### 3. Configure Credentials
 
 1. Copy `.env.example` to `.env` in the root directory.
-2. Fill in your FP Markets login credentials (each broker gets its own section in `.env` as more are added):
+2. Fill in the login credentials for whichever broker(s) you'll run (each broker gets its own section in `.env`):
 
 ```env
 # --- Broker-agnostic settings ---
@@ -114,7 +122,14 @@ DEBUG_SNAPSHOTS=False
 FPMARKETS_EMAIL=your_actual_email@example.com
 FPMARKETS_PASSWORD=your_actual_password
 FPMARKETS_PIN=your_account_pin
+
+# --- Binance credentials ---
+BINANCE_EMAIL=your_actual_email@example.com
+BINANCE_PASSWORD=your_actual_password
 ```
+
+> [!NOTE]
+> Binance's login flow may pause for a manual captcha after submitting the email, and again for an app-push "Security Verification" prompt after the password — approve these on your device/browser when they appear; the script waits before continuing.
 
 > [!NOTE]
 > `HEADLESS=False` ensures you can visually watch the browser navigate, fill the fields, and handle any 2FA/PIN prompts if requested by the portal.
@@ -128,9 +143,12 @@ FPMARKETS_PIN=your_account_pin
 
 ```bash
 python main.py --broker fpmarkets
+python main.py --broker binance
 ```
 
-Use `--force-fresh-login` to ignore any saved session and log in again. Running `python main.py --broker binance` currently exits with a clear "not implemented yet" message — see the Project Structure section above for how to build it out.
+Use `--force-fresh-login` to ignore any saved session and log in again.
+
+FP Markets scrapes full leader profiles end-to-end. Binance currently runs Phase 1 only: it paginates the Copy Trading leaderboard and saves every trader's profile URL to `data/binance/portfolio_urls.csv`; per-profile detail scraping (`TRADER_DETAILS_CSV_PATH`) is still being built out — see `scripts/test_binance_profile_extractor.py` for a standalone sanity check of that extractor against real profile URLs.
 
 ### Key Features
 * **Session Persistence (`auth_state/<broker>.json`)**: Once logged in successfully, your session cookies and storage state are saved per broker. Subsequent runs bypass the login page and load the dashboard directly.

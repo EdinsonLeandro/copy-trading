@@ -32,7 +32,9 @@ def random_sleep(min_ms: int = MIN_DELAY_MS, max_ms: int = MAX_DELAY_MS):
 # Root output directories. Each broker keeps its own subfolder under these
 # (e.g. DATA_DIR / "fpmarkets") since trader data schemas differ per platform.
 DATA_DIR = BASE_DIR / "data"
-SCREENSHOTS_DIR = BASE_DIR / "screenshots"
+# Login-failure and extraction-failure snapshots (screenshot + full HTML),
+# not feature output - named for what's actually in there.
+DEBUG_DIR = BASE_DIR / "debug"
 AUTH_STATE_DIR = BASE_DIR / "auth_state"
 
 

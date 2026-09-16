@@ -10,7 +10,7 @@ from playwright.sync_api import Page
 from src.common.config import DEBUG_SNAPSHOTS, random_sleep
 from src.common.logger import log
 from src.common.playwright_utils import evaluate_with_frame_fallback, wait_for_evaluate
-from src.brokers.fpmarkets.config import SCREENSHOTS_DIR
+from src.brokers.fpmarkets.config import DEBUG_DIR
 from src.brokers.fpmarkets.navigation import click_instruments_tab, click_trading_tab
 
 _MONTH_ABBR_TO_NUM = {abbr.lower(): idx for idx, abbr in enumerate(calendar.month_abbr) if abbr}
@@ -318,7 +318,7 @@ def _has_bars(payload: Dict[str, Any]) -> bool:
 
 def _dump_debug_snapshot(detail_page: Page, tag: str, profile_url: str) -> None:
     """
-    Saves a screenshot + full HTML of `detail_page` under SCREENSHOTS_DIR when an
+    Saves a screenshot + full HTML of `detail_page` under DEBUG_DIR when an
     expected extraction comes back empty after exhausting the poll window, so a
     failure can be diagnosed from what the bot actually saw instead of guessing.
 
@@ -329,11 +329,11 @@ def _dump_debug_snapshot(detail_page: Page, tag: str, profile_url: str) -> None:
         return
 
     try:
-        SCREENSHOTS_DIR.mkdir(exist_ok=True)
+        DEBUG_DIR.mkdir(exist_ok=True)
         id_match = re.search(r"ratings/(\d+)", profile_url)
         trader_id = id_match.group(1) if id_match else "unknown"
         stamp = time.strftime("%Y%m%d_%H%M%S")
-        base = SCREENSHOTS_DIR / f"debug_{tag}_{trader_id}_{stamp}"
+        base = DEBUG_DIR / f"debug_{tag}_{trader_id}_{stamp}"
 
         detail_page.screenshot(path=str(base.with_suffix(".png")), full_page=True)
         base.with_suffix(".html").write_text(detail_page.content(), encoding="utf-8")

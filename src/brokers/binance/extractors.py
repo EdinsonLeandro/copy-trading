@@ -1,14 +1,49 @@
 import json
 import re
+import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from playwright.sync_api import Page
 
-from src.common.config import random_sleep
+from src.common.config import DEBUG_SNAPSHOTS, random_sleep
 from src.common.logger import log
 from src.common.playwright_utils import wait_for_evaluate
-from src.brokers.binance.navigation import click_position_history_tab
+from src.brokers.binance.config import DEBUG_DIR
+from src.brokers.binance.navigation import (
+    ACTIVE_TAB_PANE_SELECTOR,
+    click_copy_traders_tab,
+    click_next_page,
+    click_position_history_tab,
+    is_next_button_disabled,
+)
+
+
+def _dump_debug_snapshot(detail_page: Page, tag: str, profile_url: str) -> None:
+    """
+    Saves a screenshot + full HTML of `detail_page` under DEBUG_DIR when
+    an expected extraction comes back incomplete, so a failure can be
+    diagnosed from what the bot actually saw instead of guessing.
+
+    Gated behind DEBUG_SNAPSHOTS (see config.py) since this would otherwise
+    run on every profile that comes back incomplete, which is noisy once the
+    extractors are known-good.
+    """
+    if not DEBUG_SNAPSHOTS:
+        return
+
+    try:
+        DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        id_match = re.search(r"lead-details/(\d+)", profile_url)
+        portfolio_id = id_match.group(1) if id_match else "unknown"
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        base = DEBUG_DIR / f"debug_{tag}_{portfolio_id}_{stamp}"
+
+        detail_page.screenshot(path=str(base.with_suffix(".png")), full_page=True)
+        base.with_suffix(".html").write_text(detail_page.content(), encoding="utf-8")
+        log.warning(f"Debug snapshot saved for {tag} (portfolio {portfolio_id}): {base.name}.png/.html")
+    except Exception as e:
+        log.debug(f"Failed to save debug snapshot ({tag}): {e}")
 
 # Binance's profile page is built from utility classes (Tailwind-style), with
 # no stable component/BEM class names to key off. So instead of fixed
@@ -224,7 +259,13 @@ _EXTRACT_POSITION_HISTORY_JS = """
         const norm = (s) => (s || "").replace(/\\s+/g, " ").trim();
         const hasClass = (el, token) => (el.className || "").includes(token);
 
-        const rows = Array.from(document.querySelectorAll("tr.bn-web-table-row"));
+        // Scoped to the active tab pane: Binance keeps every tab's pane
+        // mounted (just hidden) when you switch away, so an unscoped query
+        // could pull rows from a different tab's own table instead.
+        const pane = document.querySelector("div.bn-tab-pane.active");
+        if (!pane) return [];
+
+        const rows = Array.from(pane.querySelectorAll("tr.bn-web-table-row"));
         const positions = [];
 
         for (const row of rows) {
@@ -263,13 +304,26 @@ _EXTRACT_POSITION_HISTORY_JS = """
 """
 
 
-def scrape_position_history(detail_page: Page) -> List[Dict[str, Any]]:
+def scrape_position_history(detail_page: Page, profile_url: str) -> Tuple[List[Dict[str, Any]], bool]:
     """Switches a trader's profile page to the 'Position History' tab and
     extracts every row (this table isn't virtualized, so one pass covers
-    all of them - see click_position_history_tab)."""
-    if not click_position_history_tab(detail_page):
-        log.debug("Could not switch to Position History tab.")
-        return []
+    all of them - see click_position_history_tab).
+
+    Returns (positions, is_private_portfolio). Some portfolios hide their
+    trading history entirely (a "this is a 'private' portfolio" empty
+    state instead of a table) - that's distinguished from "genuinely no
+    closed positions" and from "tab/rows never rendered" via the second
+    return value, rather than all three collapsing into the same empty []."""
+    status = click_position_history_tab(detail_page)
+
+    if status == "private":
+        log.debug("Portfolio is private; no position history available.")
+        return [], True
+
+    if status != "rows":
+        log.debug("Position History tab/rows did not render within the wait budget.")
+        _dump_debug_snapshot(detail_page, "position_history_tab", profile_url)
+        return [], False
 
     random_sleep(800, 1500)
 
@@ -280,7 +334,96 @@ def scrape_position_history(detail_page: Page) -> List[Dict[str, Any]]:
         attempts=12,
         interval_ms=500,
     )
-    return rows or []
+    if not rows:
+        _dump_debug_snapshot(detail_page, "position_history_rows", profile_url)
+    return rows or [], False
+
+
+# Copy Traders is a plain data table (unlike Position History's card-style
+# rows), so each row is built generically from the table's own header
+# labels (User ID, Copy Margin Balance, Total PNL, Total ROI, Duration, ...)
+# zipped positionally with that row's cells - robust to column
+# reordering/renaming without needing a fixed schema.
+_EXTRACT_COPY_TRADERS_PAGE_JS = """
+    () => {
+        const norm = (s) => (s || "").replace(/\\s+/g, " ").trim();
+        const hasClass = (el, token) => (el.className || "").includes(token);
+
+        // Scoped to the active tab pane - see _EXTRACT_POSITION_HISTORY_JS.
+        const pane = document.querySelector("div.bn-tab-pane.active");
+        if (!pane) return [];
+
+        const headers = Array.from(pane.querySelectorAll("thead.bn-web-table-thead th.bn-web-table-cell")).map(
+            (th) => norm(th.textContent),
+        );
+
+        const rows = Array.from(pane.querySelectorAll("tbody.bn-web-table-tbody tr.bn-web-table-row")).filter(
+            (tr) => !hasClass(tr, "bn-web-table-measure-row"),
+        );
+
+        const records = [];
+        for (const row of rows) {
+            const cells = Array.from(row.querySelectorAll("td.bn-web-table-cell"));
+            if (cells.length === 0) continue;
+
+            const record = {};
+            cells.forEach((cell, i) => {
+                const label = headers[i] || `col_${i + 1}`;
+                record[label] = norm(cell.textContent);
+            });
+            records.push(record);
+        }
+
+        return records;
+    }
+"""
+
+
+def scrape_copy_traders(
+    detail_page: Page, profile_url: str, max_pages: Optional[int] = None
+) -> List[Dict[str, Any]]:
+    """Switches a trader's profile page to the 'Copy Traders' tab and
+    paginates through every page - the same `bn-pagination` component used
+    by the leaderboard - collecting each row generically via the table's
+    own header labels."""
+    if not click_copy_traders_tab(detail_page):
+        log.debug("Copy Traders tab has no rows (likely zero copiers).")
+        _dump_debug_snapshot(detail_page, "copy_traders_tab", profile_url)
+        return []
+
+    random_sleep(800, 1500)
+
+    all_traders: List[Dict[str, Any]] = []
+    page_idx = 1
+    # All pagination/row lookups below are scoped to the active tab pane -
+    # see ACTIVE_TAB_PANE_SELECTOR - since Binance keeps every tab's pane
+    # mounted (just hidden) when you switch away, so an unscoped query
+    # could otherwise match a different tab's own leftover table/pagination.
+    ready_selector = f"{ACTIVE_TAB_PANE_SELECTOR} tr.bn-web-table-row:not(.bn-web-table-measure-row)"
+
+    while True:
+        page_rows = wait_for_evaluate(
+            detail_page,
+            _EXTRACT_COPY_TRADERS_PAGE_JS,
+            is_sufficient=lambda r: bool(r),
+            attempts=10,
+            interval_ms=500,
+        ) or []
+        if not page_rows:
+            _dump_debug_snapshot(detail_page, "copy_traders_rows", profile_url)
+        all_traders.extend(page_rows)
+
+        if max_pages and page_idx >= max_pages:
+            break
+
+        if is_next_button_disabled(detail_page, scope=ACTIVE_TAB_PANE_SELECTOR):
+            break
+
+        click_next_page(detail_page, ready_selector=ready_selector, scope=ACTIVE_TAB_PANE_SELECTOR)
+        random_sleep(500, 1000)
+        page_idx += 1
+
+    return all_traders
 
 
 def _is_roi_chart_response(response: Any, portfolio_id: str) -> bool:
@@ -350,8 +493,14 @@ def scrape_trader_profile(detail_page: Page, profile_url: str) -> Dict[str, Any]
         interval_ms=600,
     ) or {}
 
+    if not _is_profile_data_loaded(result):
+        _dump_debug_snapshot(detail_page, "profile_fields", profile_url)
+
     result["tags"] = json.dumps(result.get("tags") or [], ensure_ascii=False)
     result["asset_preferences"] = json.dumps(result.get("asset_preferences") or {}, ensure_ascii=False)
     result["roi_chart"] = json.dumps(_parse_roi_chart_payload(roi_chart_data), ensure_ascii=False)
-    result["position_history"] = json.dumps(scrape_position_history(detail_page), ensure_ascii=False)
+    position_history, is_private_portfolio = scrape_position_history(detail_page, profile_url)
+    result["position_history"] = json.dumps(position_history, ensure_ascii=False)
+    result["is_private_portfolio"] = is_private_portfolio
+    result["copy_traders"] = json.dumps(scrape_copy_traders(detail_page, profile_url), ensure_ascii=False)
     return result
