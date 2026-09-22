@@ -21,7 +21,7 @@ copy-trading/
 ├── main.py                  # Entry point: python main.py --broker <name>
 ├── README.md
 ├── logs/                    # Auto-captured run logs (per broker, via log.set_label)
-├── screenshots/<broker>/    # Auto-captured screenshots on login/errors, per broker
+├── debug/<broker>/          # Auto-captured screenshots + HTML dumps on login/extraction errors, per broker
 ├── data/<broker>/           # Extracted CSV datasets, per broker
 ├── auth_state/<broker>.json # Saved login session per broker (gitignored)
 ├── scripts/
@@ -47,14 +47,15 @@ copy-trading/
         │   ├── orchestrator.py # Top-level scrape_all_leader_profiles() loop
         │   └── run.py          # Wires auth + orchestrator together for main.py
         │
-        └── binance/            # Binance: leaderboard URL collection is implemented;
-            ├── config.py        # per-profile detail scraping is still being built out
+        └── binance/            # Binance: both phases implemented and wired into main.py
+            ├── config.py        # Credentials, URLs, per-broker paths, validate_credentials()
             ├── auth.py          # Binance login flow (handles email/password + manual captcha/app-push waits)
             ├── csv_schema.py    # PORTFOLIO_URLS_CSV_HEADERS/TRADER_DETAILS_CSV_HEADERS + ID fields
             ├── navigation.py    # Copy Trading tab navigation, pagination, portfolio card extraction
             ├── extractors.py    # Per-tab JS extraction scripts + profile scraping
-            ├── orchestrator.py  # scrape_all_portfolio_urls() loop (Phase 1: collect profile URLs)
-            └── run.py           # Wires auth + orchestrator together for main.py
+            ├── orchestrator.py  # scrape_all_portfolio_urls() (Phase 1) + scrape_all_trader_details() (Phase 2),
+            │                    # plus resumability helpers (completion marker, reset-from-scratch, debug cleanup)
+            └── run.py           # Wires auth + both phases together for main.py
 ```
 
 Adding a new broker (e.g. OKX) means adding a new `src/brokers/<name>/` package with the same shape as `fpmarkets/` or `binance/`, and registering its `run()` in `main.py`'s `BROKER_RUNNERS` dict. Nothing in `src/common/` should ever need to know a specific broker's name, URLs, or data fields — if it does, that logic belongs in the broker package instead.
@@ -117,6 +118,7 @@ HEADLESS=False
 MIN_DELAY_MS=300
 MAX_DELAY_MS=800
 DEBUG_SNAPSHOTS=False
+RESTART_FROM_SCRATCH=False
 
 # --- FP Markets credentials ---
 FPMARKETS_EMAIL=your_actual_email@example.com
@@ -148,11 +150,15 @@ python main.py --broker binance
 
 Use `--force-fresh-login` to ignore any saved session and log in again.
 
-FP Markets scrapes full leader profiles end-to-end. Binance currently runs Phase 1 only: it paginates the Copy Trading leaderboard and saves every trader's profile URL to `data/binance/portfolio_urls.csv`; per-profile detail scraping (`TRADER_DETAILS_CSV_PATH`) is still being built out — see `scripts/test_binance_profile_extractor.py` for a standalone sanity check of that extractor against real profile URLs.
+FP Markets scrapes full leader profiles end-to-end. Binance runs both phases in sequence within a single browser session: Phase 1 paginates the Copy Trading leaderboard and saves every trader's profile URL to `data/binance/portfolio_urls.csv`, then Phase 2 visits each of those URLs and scrapes its full detail-page data into `data/binance/trader_details.csv`. Both phases are resumable — see `scripts/test_binance_profile_extractor.py` for a standalone sanity check of the Phase 2 extractor against real profile URLs, outside the full pipeline.
+
+> [!NOTE]
+> Binance does not allow multiple simultaneous sessions on one account login, so Phase 2 cannot be parallelized across multiple browser instances - both phases run sequentially in a single session.
 
 ### Key Features
 * **Session Persistence (`auth_state/<broker>.json`)**: Once logged in successfully, your session cookies and storage state are saved per broker. Subsequent runs bypass the login page and load the dashboard directly.
-* **Error & 2FA Detection**: Automatically captures error messages and screenshots into `screenshots/<broker>/` if authentication fails or if a PIN is requested.
+* **Resumable, Interruption-Safe Scraping**: Every profile/URL is written to its CSV immediately after being scraped, not batched at the end - killing the process (or losing your connection) mid-run and restarting picks up exactly where it left off, with no duplicate rows. For Binance specifically, once Phase 1 reaches the true last page it writes a completion marker (`data/binance/portfolio_urls.done`) so a rerun skips straight to Phase 2 instead of re-paginating the ~600-page leaderboard just to confirm nothing changed. Set `RESTART_FROM_SCRATCH=True` in `.env` to instead wipe a broker's saved CSVs/marker and start completely over.
+* **Error & 2FA Detection**: Automatically captures error messages and screenshots into `debug/<broker>/` if authentication fails, if a PIN is requested, or if an extraction comes back incomplete (when `DEBUG_SNAPSHOTS=True`). Snapshots left over from a previous run are cleared automatically at the start of the next one.
 * **Anti-Bot Friendly**: Runs with standard user agents and browser flags to prevent automated bot detection.
 
 ---

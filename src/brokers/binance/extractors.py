@@ -406,9 +406,24 @@ def scrape_copy_traders(
             detail_page,
             _EXTRACT_COPY_TRADERS_PAGE_JS,
             is_sufficient=lambda r: bool(r),
-            attempts=10,
-            interval_ms=500,
+            attempts=16,
+            interval_ms=750,
         ) or []
+        if not page_rows:
+            # Rows can still be mid-render (loading spinner up) after the
+            # budget above on slow page transitions - especially on the
+            # trailing page of a trader with many pages of copiers, observed
+            # to take notably longer to settle than a normal page. One full
+            # retry after a cooldown catches that before giving up for real.
+            log.debug("Copy Traders page came back empty; retrying once before giving up...")
+            random_sleep(1500, 2500)
+            page_rows = wait_for_evaluate(
+                detail_page,
+                _EXTRACT_COPY_TRADERS_PAGE_JS,
+                is_sufficient=lambda r: bool(r),
+                attempts=16,
+                interval_ms=750,
+            ) or []
         if not page_rows:
             _dump_debug_snapshot(detail_page, "copy_traders_rows", profile_url)
         all_traders.extend(page_rows)
