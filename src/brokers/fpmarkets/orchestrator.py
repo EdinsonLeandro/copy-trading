@@ -1,10 +1,12 @@
+import random
 import time
 from datetime import datetime, timezone
 from typing import Optional
 
 from playwright.sync_api import Page
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-from src.common.config import random_sleep
+from src.common.config import MAX_DELAY_MS, MIN_DELAY_MS, random_sleep
 from src.common.csv_store import append_rows, init_csv_file, load_existing_ids
 from src.common.logger import log
 from src.brokers.fpmarkets.config import TRADER_DETAILS_CSV_PATH
@@ -17,15 +19,39 @@ from src.brokers.fpmarkets.navigation import (
     parse_page_info,
 )
 
+# Anti-detection pacing (analog to the Binance scraper's phase 2 - see
+# src/brokers/binance/orchestrator.py): a long "human break" every
+# LONG_BREAK_EVERY_MIN-MAX profiles, and a per-run cap of
+# SESSION_CAP_MIN-MAX newly-scraped profiles so a single session doesn't
+# hammer the leaderboard across all ~105 pages in one unbroken run.
+LONG_BREAK_EVERY_MIN = 20
+LONG_BREAK_EVERY_MAX = 40
+SESSION_CAP_MIN = 200
+SESSION_CAP_MAX = 400
 
-def scrape_all_leader_profiles(page: Page, max_pages: Optional[int] = None) -> int:
+
+def scrape_all_leader_profiles(
+    page: Page, max_pages: Optional[int] = None, max_profiles: Optional[int] = None
+) -> int:
     """
     Two-Tab Interleaved Scraping Workflow:
     1. Tab 1 (page): Navigates to Leaders list and manages pagination across 105 pages.
     2. Tab 2 (detail_page): Navigates to each unvisited trader profile and extracts metrics.
     3. Checks existing CSV first; skips any already-scraped traders to avoid redundant requests.
     4. Appends each trader record immediately to CSV and flushes to disk.
+
+    Anti-detection pacing: on top of the random_sleep between profiles, a longer
+    "human break" is taken every LONG_BREAK_EVERY_MIN-MAX newly-scraped profiles,
+    and - when the caller doesn't pass an explicit `max_profiles` - the run caps
+    itself at a random SESSION_CAP_MIN-MAX profiles rather than ploughing through
+    the whole leaderboard in one unbroken session. A Playwright TimeoutError
+    while scraping a profile aborts the run (rather than being logged/skipped)
+    since it usually signals the site is throttling/blocking the session.
     """
+    if max_profiles is None:
+        max_profiles = random.randint(SESSION_CAP_MIN, SESSION_CAP_MAX)
+        log.info(f"No max_profiles given; capping this session at {max_profiles} profiles.")
+
     init_csv_file(TRADER_DETAILS_CSV_PATH, CSV_HEADERS)
     seen_ids = load_existing_ids(TRADER_DETAILS_CSV_PATH, ID_FIELDS)
     log.info(f"Loaded {len(seen_ids)} existing trader records from {TRADER_DETAILS_CSV_PATH.name}")
@@ -40,6 +66,8 @@ def scrape_all_leader_profiles(page: Page, max_pages: Optional[int] = None) -> i
 
     page_idx = 1
     total_saved = 0
+    next_break_at = random.randint(LONG_BREAK_EVERY_MIN, LONG_BREAK_EVERY_MAX)
+    session_cap_reached = False
 
     try:
         while True:
@@ -82,7 +110,15 @@ def scrape_all_leader_profiles(page: Page, max_pages: Optional[int] = None) -> i
 
                 # Scrape profile in Tab 2
                 log.info(f"🔍 [{idx}/{len(page_cards)}] Scraping profile: {name} (ID: {tid})")
-                profile_metrics = scrape_trader_profile(detail_page, purl)
+                try:
+                    profile_metrics = scrape_trader_profile(detail_page, purl)
+                except PlaywrightTimeoutError as e:
+                    log.error(
+                        f"Timeout while scraping profile {purl}: {e}. "
+                        "This usually means FP Markets is throttling/blocking the session - "
+                        "aborting the run (browser will be closed) rather than continuing."
+                    )
+                    raise
 
                 # Combine card metadata + profile metrics
                 full_record = {
@@ -109,8 +145,23 @@ def scrape_all_leader_profiles(page: Page, max_pages: Optional[int] = None) -> i
                     f"(Total saved: {total_saved})"
                 )
 
-                # Delay between profile visits
-                random_sleep(800, 1600)
+                if total_saved >= max_profiles:
+                    log.warning(f"Reached this session's profile cap ({max_profiles}). Stopping.")
+                    session_cap_reached = True
+                    break
+
+                # Delay between profile visits - a longer human-like break every
+                # LONG_BREAK_EVERY_MIN-MAX profiles, a normal one otherwise.
+                if total_saved >= next_break_at:
+                    break_ms = random.randint(20 * MIN_DELAY_MS, 20 * MAX_DELAY_MS)
+                    log.info(f"Taking a longer human-like break ({break_ms / 1000:.0f}s) after {total_saved} profiles...")
+                    random_sleep(break_ms, break_ms)
+                    next_break_at = total_saved + random.randint(LONG_BREAK_EVERY_MIN, LONG_BREAK_EVERY_MAX)
+                else:
+                    random_sleep(MIN_DELAY_MS, MAX_DELAY_MS)
+
+            if session_cap_reached:
+                break
 
             # Check if max pages reached
             if max_pages and display_page >= max_pages:

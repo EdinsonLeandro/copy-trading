@@ -1,11 +1,13 @@
 import calendar
 import json
+import random
 import re
 import time
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
 from playwright.sync_api import Page
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from src.common.config import DEBUG_SNAPSHOTS, random_sleep
 from src.common.logger import log
@@ -342,6 +344,30 @@ def _dump_debug_snapshot(detail_page: Page, tag: str, profile_url: str) -> None:
         log.debug(f"Failed to save debug snapshot ({tag}): {e}")
 
 
+# Behavioral noise (analog to the Binance scraper's _maybe_human_scroll -
+# see src/brokers/binance/extractors.py): only a random subset of profiles
+# get scrolled at all, and both the number of scrolls and each scroll's
+# distance are randomized so the pattern isn't itself a fingerprint.
+_SCROLL_PROBABILITY = 0.4
+
+
+def _maybe_human_scroll(detail_page: Page) -> None:
+    """Scrolls the loaded profile page a random amount, on a random subset
+    of profiles, purely as behavioral noise against bot detection."""
+    if random.random() >= _SCROLL_PROBABILITY:
+        return
+
+    num_scrolls = random.randint(1, 4)
+    for _ in range(num_scrolls):
+        distance = random.randint(200, 900)
+        try:
+            detail_page.mouse.wheel(0, distance)
+        except Exception as e:
+            log.debug(f"Human-scroll noise skipped: {e}")
+            return
+        random_sleep(300, 800)
+
+
 def scrape_trader_profile(detail_page: Page, profile_url: str) -> Dict[str, str]:
     """
     Navigates to a trader's profile URL on Tab 2 and extracts 'Return' tab metrics:
@@ -372,6 +398,8 @@ def scrape_trader_profile(detail_page: Page, profile_url: str) -> Dict[str, str]
         metrics.update(period_metrics)
         if not _has_period_return_data(period_metrics):
             _dump_debug_snapshot(detail_page, "return_period", profile_url)
+
+        _maybe_human_scroll(detail_page)
 
         try:
             detail_page.wait_for_selector("path.apexcharts-bar-area", timeout=8000)
@@ -432,6 +460,12 @@ def scrape_trader_profile(detail_page: Page, profile_url: str) -> Dict[str, str]
             if trade_stats_data:
                 metrics["trade_statistics"] = json.dumps(trade_stats_data, ensure_ascii=False)
 
+    except PlaywrightTimeoutError:
+        # Propagate rather than swallow: a timeout here usually signals the
+        # site throttling/blocking the session, so the orchestrator's caller
+        # treats it as fatal (see scrape_all_leader_profiles) instead of
+        # silently continuing on a possibly-blocked session.
+        raise
     except Exception as e:
         log.warning(f"Notice reading profile ({profile_url}): {e}")
 

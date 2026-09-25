@@ -1,10 +1,12 @@
 import csv
+import random
 from datetime import datetime, timezone
 from typing import Optional
 
 from playwright.sync_api import Page
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-from src.common.config import DEBUG_SNAPSHOTS, random_sleep
+from src.common.config import DEBUG_SNAPSHOTS, MAX_DELAY_MS, MIN_DELAY_MS, random_sleep
 from src.common.csv_store import append_rows, init_csv_file, load_existing_ids
 from src.common.logger import log
 from src.brokers.binance.config import (
@@ -145,6 +147,17 @@ def clear_debug_snapshots() -> None:
         log.info(f"Cleared {deleted} debug snapshot file(s) from a previous run in {DEBUG_DIR}")
 
 
+# Phase 2 anti-detection pacing (see scrape_all_trader_details): a long
+# "human break" every LONG_BREAK_EVERY_MIN-LONG_BREAK_EVERY_MAX profiles, and
+# a per-run cap of SESSION_CAP_MIN-SESSION_CAP_MAX profiles so a single
+# session doesn't hammer the leaderboard for the full 12K-profile backlog
+# in one unbroken run.
+LONG_BREAK_EVERY_MIN = 20
+LONG_BREAK_EVERY_MAX = 40
+SESSION_CAP_MIN = 200
+SESSION_CAP_MAX = 400
+
+
 def _load_portfolio_urls() -> list:
     if not PORTFOLIO_URLS_CSV_PATH.exists():
         return []
@@ -167,7 +180,16 @@ def scrape_all_trader_details(page: Page, max_profiles: Optional[int] = None) ->
     skipped, and each profile's result is appended to CSV and flushed
     immediately, so an interrupted run can be restarted without re-scraping
     profiles already covered. One profile failing to scrape is logged and
-    skipped rather than aborting the whole run.
+    skipped rather than aborting the whole run - except a Playwright
+    TimeoutError, which signals Binance may be throttling/blocking the
+    session, so that aborts the run instead (see the TimeoutError handling
+    below).
+
+    Anti-detection pacing: on top of the random_sleep between profiles, a
+    longer "human break" is taken every LONG_BREAK_EVERY_MIN-MAX profiles,
+    and - when the caller doesn't pass an explicit `max_profiles` - the run
+    caps itself at a random SESSION_CAP_MIN-MAX profiles rather than
+    ploughing through the whole backlog in one unbroken session.
     """
     portfolios = _load_portfolio_urls()
     if not portfolios:
@@ -184,16 +206,26 @@ def scrape_all_trader_details(page: Page, max_profiles: Optional[int] = None) ->
     ]
     log.info(f"{len(remaining)} of {len(portfolios)} profiles remain to be scraped.")
 
-    if max_profiles:
-        remaining = remaining[:max_profiles]
+    if max_profiles is None:
+        max_profiles = random.randint(SESSION_CAP_MIN, SESSION_CAP_MAX)
+        log.info(f"No max_profiles given; capping this session at {max_profiles} profiles.")
+    remaining = remaining[:max_profiles]
 
     total_saved = 0
+    next_break_at = random.randint(LONG_BREAK_EVERY_MIN, LONG_BREAK_EVERY_MAX)
     for i, portfolio in enumerate(remaining, start=1):
         profile_url = portfolio["profile_url"]
         log.info(f"─── Profile {i}/{len(remaining)}: {profile_url} ───")
 
         try:
             result = scrape_trader_profile(page, profile_url)
+        except PlaywrightTimeoutError as e:
+            log.error(
+                f"Timeout while scraping profile {profile_url}: {e}. "
+                "This usually means Binance is throttling/blocking the session - "
+                "aborting the run (browser will be closed) rather than continuing."
+            )
+            raise
         except Exception as e:
             log.error(f"Failed to scrape profile {profile_url}: {e}")
             continue
@@ -208,7 +240,13 @@ def scrape_all_trader_details(page: Page, max_profiles: Optional[int] = None) ->
         total_saved += 1
         log.success(f"✓ Saved details for {row.get('name') or '(no name)'} (Total saved: {total_saved})")
 
-        random_sleep(800, 1500)
+        if i >= next_break_at:
+            break_ms = random.randint(20 * MIN_DELAY_MS, 20 * MAX_DELAY_MS)
+            log.info(f"Taking a longer human-like break ({break_ms / 1000:.0f}s) after {i} profiles...")
+            random_sleep(break_ms, break_ms)
+            next_break_at = i + random.randint(LONG_BREAK_EVERY_MIN, LONG_BREAK_EVERY_MAX)
+        else:
+            random_sleep(MIN_DELAY_MS, MAX_DELAY_MS)
 
     log.success(f"✓ Trader detail scraping complete! All details saved in: {TRADER_DETAILS_CSV_PATH}")
     return total_saved

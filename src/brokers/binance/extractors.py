@@ -1,4 +1,5 @@
 import json
+import random
 import re
 import time
 from datetime import datetime, timezone
@@ -487,6 +488,30 @@ def _parse_roi_chart_payload(raw: Any) -> List[Dict[str, Any]]:
     return points
 
 
+# Behavioral noise: only a random subset of profiles get scrolled at all
+# (a real visitor wouldn't scroll every single page the same way), and both
+# the number of scrolls and each scroll's distance are randomized so the
+# pattern isn't itself a detectable fingerprint.
+_SCROLL_PROBABILITY = 0.4
+
+
+def _maybe_human_scroll(detail_page: Page) -> None:
+    """Scrolls the loaded profile page a random amount, on a random subset
+    of profiles, purely as behavioral noise against bot detection."""
+    if random.random() >= _SCROLL_PROBABILITY:
+        return
+
+    num_scrolls = random.randint(1, 4)
+    for _ in range(num_scrolls):
+        distance = random.randint(200, 900)
+        try:
+            detail_page.mouse.wheel(0, distance)
+        except Exception as e:
+            log.debug(f"Human-scroll noise skipped: {e}")
+            return
+        random_sleep(300, 800)
+
+
 def scrape_trader_profile(detail_page: Page, profile_url: str) -> Dict[str, Any]:
     """Navigates to a trader's Copy Trading profile page and extracts the
     fields described in the profile UI (name, level, tags, performance
@@ -510,6 +535,8 @@ def scrape_trader_profile(detail_page: Page, profile_url: str) -> Dict[str, Any]
 
     if not _is_profile_data_loaded(result):
         _dump_debug_snapshot(detail_page, "profile_fields", profile_url)
+
+    _maybe_human_scroll(detail_page)
 
     result["tags"] = json.dumps(result.get("tags") or [], ensure_ascii=False)
     result["asset_preferences"] = json.dumps(result.get("asset_preferences") or {}, ensure_ascii=False)

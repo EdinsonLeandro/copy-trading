@@ -21,4 +21,5 @@ debug/
 downloads/
 data/
 *.log
+scripts/fingerprint_check/fingerprint_check_results/
 

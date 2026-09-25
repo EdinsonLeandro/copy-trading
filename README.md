@@ -150,7 +150,7 @@ python main.py --broker binance
 
 Use `--force-fresh-login` to ignore any saved session and log in again.
 
-FP Markets scrapes full leader profiles end-to-end. Binance runs both phases in sequence within a single browser session: Phase 1 paginates the Copy Trading leaderboard and saves every trader's profile URL to `data/binance/portfolio_urls.csv`, then Phase 2 visits each of those URLs and scrapes its full detail-page data into `data/binance/trader_details.csv`. Both phases are resumable — see `scripts/test_binance_profile_extractor.py` for a standalone sanity check of the Phase 2 extractor against real profile URLs, outside the full pipeline.
+FP Markets scrapes full leader profiles end-to-end. Binance runs both phases in sequence within a single browser session: Phase 1 paginates the Copy Trading leaderboard and saves every trader's profile URL to `data/binance/portfolio_urls.csv`, then Phase 2 visits each of those URLs and scrapes its full detail-page data into `data/binance/trader_details.csv`. Both phases are resumable — see `scripts/test_profile_extractor/test_binance_profile_extractor.py` for a standalone sanity check of the Phase 2 extractor against real profile URLs, outside the full pipeline.
 
 > [!NOTE]
 > Binance does not allow multiple simultaneous sessions on one account login, so Phase 2 cannot be parallelized across multiple browser instances - both phases run sequentially in a single session.

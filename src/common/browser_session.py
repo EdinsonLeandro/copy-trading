@@ -8,10 +8,14 @@ from playwright.sync_api import Browser, BrowserContext, Locator, Page, Playwrig
 from src.common.config import HEADLESS, random_sleep
 from src.common.logger import log
 
-DEFAULT_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-)
+# No hardcoded user_agent is passed to new_context() below - Playwright's
+# default UA always matches the actual installed Chromium build across the
+# main thread, Workers, and Client Hints (navigator.userAgentData). A pinned
+# string here (previously a Chrome/124 UA against an actually-newer Chromium
+# build) instead goes stale over Playwright/Chromium upgrades and creates
+# exactly the kind of UA-vs-Client-Hints mismatch fingerprinting scripts
+# (e.g. CreepJS) flag as a bot tell.
+
 
 def human_type(locator: Locator, text: str) -> None:
     """Types text character by character with randomized human-like delays."""
@@ -88,7 +92,6 @@ def get_authenticated_session(
         context = browser.new_context(
             storage_state=str(auth_state_path),
             viewport=None,
-            user_agent=DEFAULT_USER_AGENT,
         )
         page = context.new_page()
         maximize_window(page)
@@ -103,7 +106,7 @@ def get_authenticated_session(
             auth_state_path.unlink(missing_ok=True)
             context.clear_cookies()
     else:
-        context = browser.new_context(viewport=None, user_agent=DEFAULT_USER_AGENT)
+        context = browser.new_context(viewport=None)
         page = context.new_page()
         maximize_window(page)
 
