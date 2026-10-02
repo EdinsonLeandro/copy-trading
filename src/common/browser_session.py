@@ -131,3 +131,27 @@ def get_authenticated_session(
         browser.close()
         playwright.stop()
         return None, None, None, None
+
+
+def close_browser_session(
+    playwright: Optional[Playwright],
+    browser: Optional[Browser],
+    context: Optional[BrowserContext],
+) -> None:
+    """
+    Tears down a session from get_authenticated_session, closing each piece
+    independently so one failing step (e.g. a context left wedged by a page
+    that stopped responding) doesn't skip the rest or mask the original
+    error that triggered the shutdown.
+    """
+    for name, closer in (
+        ("context", context.close if context else None),
+        ("browser", browser.close if browser else None),
+        ("playwright", playwright.stop if playwright else None),
+    ):
+        if closer is None:
+            continue
+        try:
+            closer()
+        except Exception as e:
+            log.warning(f"Error while closing {name}: {e}")

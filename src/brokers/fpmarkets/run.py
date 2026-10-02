@@ -1,15 +1,35 @@
 from rich.panel import Panel
 
+from src.common.browser_session import close_browser_session
+from src.common.config import RESTART_FROM_SCRATCH
 from src.common.logger import log
 from src.brokers.fpmarkets.auth import get_authenticated_session
-from src.brokers.fpmarkets.config import FPMARKETS_EMAIL, PROFILES_CSV_PATH, ensure_directories, validate_credentials
-from src.brokers.fpmarkets.orchestrator import scrape_all_leader_profiles
+from src.brokers.fpmarkets.config import (
+    FPMARKETS_EMAIL,
+    LEADER_URLS_CSV_PATH,
+    TRADER_DETAILS_CSV_PATH,
+    ensure_directories,
+    validate_credentials,
+)
+from src.brokers.fpmarkets.orchestrator import (
+    clear_debug_snapshots,
+    is_leader_url_collection_complete,
+    reset_all_data,
+    scrape_all_leader_urls,
+    scrape_all_trader_details,
+)
 
 
 def run(force_fresh_login: bool = False) -> None:
     """Entry point for `python main.py --broker fpmarkets`."""
     log.set_label("fpmarkets")
     ensure_directories()
+
+    if RESTART_FROM_SCRATCH:
+        log.warning("RESTART_FROM_SCRATCH is set - wiping previous run output before starting.")
+        reset_all_data()
+
+    clear_debug_snapshots()
 
     log.print(
         Panel.fit(
@@ -34,15 +54,33 @@ def run(force_fresh_login: bool = False) -> None:
         raise SystemExit(1)
 
     try:
-        log.success("🎉 Authentication successful! Launching Copy Trading Scraper...")
+        log.success("🎉 Authentication successful!")
 
-        total_scraped = scrape_all_leader_profiles(page)
+        if is_leader_url_collection_complete():
+            log.info("Leader URL collection already complete (marker found); skipping to phase 2.")
+        else:
+            log.success("Collecting Copy Trading leader URLs...")
+            total_urls_saved = scrape_all_leader_urls(page)
+
+            log.print(
+                Panel.fit(
+                    f"[bold green]Leader URL Collection Complete![/bold green]\n"
+                    f"[cyan]New URLs Saved:[/cyan] [yellow]{total_urls_saved}[/yellow]\n"
+                    f"[cyan]Output CSV File:[/cyan] [green]{LEADER_URLS_CSV_PATH}[/green]",
+                    border_style="green",
+                )
+            )
+
+        log.success("Collecting per-trader profile details...")
+        details_summary = scrape_all_trader_details(page)
 
         log.print(
             Panel.fit(
-                f"[bold green]Scraping Completed Successfully![/bold green]\n"
-                f"[cyan]Total Profiles Processed:[/cyan] [yellow]{total_scraped}[/yellow]\n"
-                f"[cyan]Output CSV File:[/cyan] [green]{PROFILES_CSV_PATH}[/green]",
+                f"[bold green]Trader Detail Scraping Complete![/bold green]\n"
+                f"[cyan]New Profiles Saved:[/cyan] [yellow]{details_summary.new_saved:,}[/yellow]\n"
+                f"[cyan]Total Profiles Scraped:[/cyan] [yellow]{details_summary.total_scraped:,}[/yellow]\n"
+                f"[cyan]Remaining Profiles:[/cyan] [yellow]{details_summary.remaining:,}[/yellow]\n"
+                f"[cyan]Output CSV File:[/cyan] [green]{TRADER_DETAILS_CSV_PATH}[/green]",
                 border_style="green",
             )
         )
@@ -51,7 +89,5 @@ def run(force_fresh_login: bool = False) -> None:
         input()
     finally:
         log.warning("Closing browser session...")
-        context.close()
-        browser.close()
-        playwright.stop()
+        close_browser_session(playwright, browser, context)
         log.success("✓ Closed.")

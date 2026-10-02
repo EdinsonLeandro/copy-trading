@@ -458,14 +458,24 @@ def _capture_roi_chart_data(detail_page: Page, profile_url: str, portfolio_id: s
     curve, not the underlying values/dates. `expect_response` is set up
     before `goto` (as its context manager) so the request can't fire and be
     missed before the listener is armed.
+
+    Only a missing/unparseable ROI response is swallowed (returns None). If
+    the `goto` itself fails - e.g. a Playwright TimeoutError because Binance
+    stopped responding - it's re-raised so the orchestrator can abort the
+    run instead of carrying on against a page that never loaded (whose
+    `page.evaluate` calls would then hang indefinitely).
     """
+    navigated = False
     try:
         with detail_page.expect_response(
             lambda r: _is_roi_chart_response(r, portfolio_id), timeout=20000
         ) as response_info:
             detail_page.goto(profile_url, wait_until="domcontentloaded", timeout=60000)
+            navigated = True
         return response_info.value.json()
     except Exception as e:
+        if not navigated:
+            raise
         log.debug(f"Could not capture ROI chart-data response for {profile_url}: {e}")
         return None
 

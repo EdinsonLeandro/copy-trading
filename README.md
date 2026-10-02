@@ -38,14 +38,14 @@ copy-trading/
     │   └── csv_store.py       # Generic CSV init/append/dedup, parameterized by each broker's own schema
     │
     └── brokers/
-        ├── fpmarkets/         # FP Markets: reference implementation
+        ├── fpmarkets/         # FP Markets: two-phase pipeline (same shape as binance/)
         │   ├── config.py       # Credentials, URLs, per-broker paths, validate_credentials()
         │   ├── auth.py         # FP Markets login flow (built on common/browser_session.py)
-        │   ├── csv_schema.py   # This broker's CSV_HEADERS + ID_FIELDS (dedup key columns)
+        │   ├── csv_schema.py   # Leader-URL + trader-detail CSV headers and dedup key columns
         │   ├── navigation.py   # Leaders list navigation, pagination, card extraction
         │   ├── extractors.py   # Per-tab JS extraction scripts + profile scraping
-        │   ├── orchestrator.py # Top-level scrape_all_leader_profiles() loop
-        │   └── run.py          # Wires auth + orchestrator together for main.py
+        │   ├── orchestrator.py # scrape_all_leader_urls() (Phase 1) + scrape_all_trader_details() (Phase 2)
+        │   └── run.py          # Wires auth + both phases together for main.py
         │
         └── binance/            # Binance: both phases implemented and wired into main.py
             ├── config.py        # Credentials, URLs, per-broker paths, validate_credentials()
@@ -119,6 +119,8 @@ MIN_DELAY_MS=300
 MAX_DELAY_MS=800
 DEBUG_SNAPSHOTS=False
 RESTART_FROM_SCRATCH=False
+SESSION_CAP_MIN=100
+SESSION_CAP_MAX=130
 
 # --- FP Markets credentials ---
 FPMARKETS_EMAIL=your_actual_email@example.com
@@ -150,14 +152,14 @@ python main.py --broker binance
 
 Use `--force-fresh-login` to ignore any saved session and log in again.
 
-FP Markets scrapes full leader profiles end-to-end. Binance runs both phases in sequence within a single browser session: Phase 1 paginates the Copy Trading leaderboard and saves every trader's profile URL to `data/binance/portfolio_urls.csv`, then Phase 2 visits each of those URLs and scrapes its full detail-page data into `data/binance/trader_details.csv`. Both phases are resumable — see `scripts/test_profile_extractor/test_binance_profile_extractor.py` for a standalone sanity check of the Phase 2 extractor against real profile URLs, outside the full pipeline.
+Both brokers run two phases in sequence within a single browser session: Phase 1 paginates the Copy Trading leaderboard and saves every trader's profile URL (`data/binance/portfolio_urls.csv`, `data/fpmarkets/leader_urls.csv`), then Phase 2 visits each of those URLs and scrapes its full detail-page data into `data/<broker>/trader_details.csv`. Each run of Phase 2 scrapes a random number of new profiles between `SESSION_CAP_MIN` and `SESSION_CAP_MAX` (set in `.env`, shared by every broker), and the final panel shows how many profiles were saved this run, how many are scraped in total, and how many remain. Both phases are resumable — see `scripts/test_profile_extractor/test_binance_profile_extractor.py` for a standalone sanity check of the Phase 2 extractor against real profile URLs, outside the full pipeline.
 
 > [!NOTE]
 > Binance does not allow multiple simultaneous sessions on one account login, so Phase 2 cannot be parallelized across multiple browser instances - both phases run sequentially in a single session.
 
 ### Key Features
 * **Session Persistence (`auth_state/<broker>.json`)**: Once logged in successfully, your session cookies and storage state are saved per broker. Subsequent runs bypass the login page and load the dashboard directly.
-* **Resumable, Interruption-Safe Scraping**: Every profile/URL is written to its CSV immediately after being scraped, not batched at the end - killing the process (or losing your connection) mid-run and restarting picks up exactly where it left off, with no duplicate rows. For Binance specifically, once Phase 1 reaches the true last page it writes a completion marker (`data/binance/portfolio_urls.done`) so a rerun skips straight to Phase 2 instead of re-paginating the ~600-page leaderboard just to confirm nothing changed. Set `RESTART_FROM_SCRATCH=True` in `.env` to instead wipe a broker's saved CSVs/marker and start completely over.
+* **Resumable, Interruption-Safe Scraping**: Every profile/URL is written to its CSV immediately after being scraped, not batched at the end - killing the process (or losing your connection) mid-run and restarting picks up exactly where it left off, with no duplicate rows. Once Phase 1 reaches the true last page it writes a completion marker (`data/binance/portfolio_urls.done`, `data/fpmarkets/leader_urls.done`) so a rerun skips straight to Phase 2 instead of re-paginating the whole leaderboard just to confirm nothing changed. A profile that fails to scrape is skipped rather than saved, so it is retried on the next run. Set `RESTART_FROM_SCRATCH=True` in `.env` to instead wipe a broker's saved CSVs/marker and start completely over.
 * **Error & 2FA Detection**: Automatically captures error messages and screenshots into `debug/<broker>/` if authentication fails, if a PIN is requested, or if an extraction comes back incomplete (when `DEBUG_SNAPSHOTS=True`). Snapshots left over from a previous run are cleared automatically at the start of the next one.
 * **Anti-Bot Friendly**: Runs with standard user agents and browser flags to prevent automated bot detection.
 

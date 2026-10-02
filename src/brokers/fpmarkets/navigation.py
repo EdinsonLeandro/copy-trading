@@ -213,6 +213,72 @@ def extract_cards_from_page(container: Any, current_page: int) -> List[Dict[str,
     return extracted
 
 
+_NEXT_BUTTON_SELECTOR = (
+    "button.mat-paginator-navigation-next, button[aria-label='Next page'], mat-paginator button:has-text('>')"
+)
+
+
+def wait_for_leaders_page_ready(page: Page, container: Any) -> Any:
+    """
+    Waits for the current Leaders page to finish loading and returns a fresh
+    container reference. Re-acquired each call: if the list lives inside an
+    iframe, that frame can be detached/replaced across a page transition,
+    which would otherwise raise on a stale `container` reference.
+    """
+    try:
+        container, _ = get_leaders_container(page)
+    except Exception:
+        pass
+
+    try:
+        container.locator(".ta-loading-bar, mat-progress-bar").wait_for(state="detached", timeout=6000)
+    except Exception:
+        pass
+
+    random_sleep(600, 1200)
+    return container
+
+
+def is_next_button_disabled(container: Any) -> bool:
+    """True when the paginator's Next button is missing or disabled (i.e. the
+    current page is the last one)."""
+    next_button = container.locator(_NEXT_BUTTON_SELECTOR).first
+    if next_button.count() == 0:
+        log.warning("Next page button not found.")
+        return True
+
+    return (
+        next_button.is_disabled()
+        or next_button.get_attribute("disabled") is not None
+        or "mat-button-disabled" in (next_button.get_attribute("class") or "")
+        or next_button.get_attribute("aria-disabled") == "true"
+    )
+
+
+def click_next_page(page: Page, container: Any, curr_page: int) -> None:
+    """Advances the Leaders list to the next page and waits (up to ~6s) for
+    the paginator label to move past `curr_page`."""
+    next_button = container.locator(_NEXT_BUTTON_SELECTOR).first
+    try:
+        next_button.scroll_into_view_if_needed()
+        next_button.click(force=True)
+    except Exception:
+        page.evaluate("""
+            () => {
+                const next = document.querySelector("button.mat-paginator-navigation-next, button[aria-label='Next page']");
+                if (next) next.click();
+            }
+        """)
+
+    for _ in range(12):
+        time.sleep(0.5)
+        new_curr_page, _ = parse_page_info(container)
+        if new_curr_page != curr_page and new_curr_page > 0:
+            return
+
+    random_sleep(1500, 2500)
+
+
 def click_trading_tab(detail_page: Page) -> bool:
     """Switches a trader profile page to the 'Trading' tab."""
     return click_tab(

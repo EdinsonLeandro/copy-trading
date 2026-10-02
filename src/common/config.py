@@ -23,6 +23,13 @@ MAX_DELAY_MS = int(os.getenv("MAX_DELAY_MS", "800"))
 # resuming. Off by default since resuming is the normal/expected behavior.
 RESTART_FROM_SCRATCH = os.getenv("RESTART_FROM_SCRATCH", "False").lower() in ("true", "1", "yes")
 
+# Per-run cap on newly-scraped profiles, shared by every broker: each run
+# picks a random number in [SESSION_CAP_MIN, SESSION_CAP_MAX] and stops once
+# it has saved that many, so no single session ploughs through the whole
+# backlog in one unbroken run (an anti-detection measure).
+SESSION_CAP_MIN = int(os.getenv("SESSION_CAP_MIN", "100"))
+SESSION_CAP_MAX = int(os.getenv("SESSION_CAP_MAX", "130"))
+
 
 def get_random_delay_ms(min_ms: int = MIN_DELAY_MS, max_ms: int = MAX_DELAY_MS) -> int:
     """Returns a random delay in milliseconds between min and max."""

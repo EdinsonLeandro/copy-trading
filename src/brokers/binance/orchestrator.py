@@ -6,9 +6,17 @@ from typing import Optional
 from playwright.sync_api import Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-from src.common.config import DEBUG_SNAPSHOTS, MAX_DELAY_MS, MIN_DELAY_MS, random_sleep
+from src.common.config import (
+    DEBUG_SNAPSHOTS,
+    MAX_DELAY_MS,
+    MIN_DELAY_MS,
+    SESSION_CAP_MAX,
+    SESSION_CAP_MIN,
+    random_sleep,
+)
 from src.common.csv_store import append_rows, init_csv_file, load_existing_ids
 from src.common.logger import log
+from src.common.scrape_summary import TraderDetailsSummary
 from src.brokers.binance.config import (
     DEBUG_DIR,
     PORTFOLIO_URLS_CSV_PATH,
@@ -149,13 +157,11 @@ def clear_debug_snapshots() -> None:
 
 # Phase 2 anti-detection pacing (see scrape_all_trader_details): a long
 # "human break" every LONG_BREAK_EVERY_MIN-LONG_BREAK_EVERY_MAX profiles, and
-# a per-run cap of SESSION_CAP_MIN-SESSION_CAP_MAX profiles so a single
-# session doesn't hammer the leaderboard for the full 12K-profile backlog
-# in one unbroken run.
+# a per-run cap of SESSION_CAP_MIN-SESSION_CAP_MAX profiles (set in .env,
+# see src/common/config.py) so a single session doesn't hammer the leaderboard for the
+# full 12K-profile backlog in one unbroken run.
 LONG_BREAK_EVERY_MIN = 20
 LONG_BREAK_EVERY_MAX = 40
-SESSION_CAP_MIN = 200
-SESSION_CAP_MAX = 400
 
 
 def _load_portfolio_urls() -> list:
@@ -170,7 +176,7 @@ def _load_portfolio_urls() -> list:
         ]
 
 
-def scrape_all_trader_details(page: Page, max_profiles: Optional[int] = None) -> int:
+def scrape_all_trader_details(page: Page, max_profiles: Optional[int] = None) -> TraderDetailsSummary:
     """
     Phase 2: visits every profile URL collected by scrape_all_portfolio_urls
     (PORTFOLIO_URLS_CSV_PATH) and scrapes its full detail-page data via
@@ -194,7 +200,7 @@ def scrape_all_trader_details(page: Page, max_profiles: Optional[int] = None) ->
     portfolios = _load_portfolio_urls()
     if not portfolios:
         log.warning(f"No portfolio URLs found in {PORTFOLIO_URLS_CSV_PATH.name}. Run phase 1 first.")
-        return 0
+        return TraderDetailsSummary(new_saved=0, total_scraped=0, remaining=0)
 
     init_csv_file(TRADER_DETAILS_CSV_PATH, TRADER_DETAILS_CSV_HEADERS)
     seen_ids = load_existing_ids(TRADER_DETAILS_CSV_PATH, TRADER_DETAILS_ID_FIELDS)
@@ -205,6 +211,7 @@ def scrape_all_trader_details(page: Page, max_profiles: Optional[int] = None) ->
         if p["portfolio_id"] not in seen_ids and p["profile_url"] not in seen_ids
     ]
     log.info(f"{len(remaining)} of {len(portfolios)} profiles remain to be scraped.")
+    backlog_before_run = len(remaining)
 
     if max_profiles is None:
         max_profiles = random.randint(SESSION_CAP_MIN, SESSION_CAP_MAX)
@@ -249,4 +256,9 @@ def scrape_all_trader_details(page: Page, max_profiles: Optional[int] = None) ->
             random_sleep(MIN_DELAY_MS, MAX_DELAY_MS)
 
     log.success(f"✓ Trader detail scraping complete! All details saved in: {TRADER_DETAILS_CSV_PATH}")
-    return total_saved
+    remaining_after_run = backlog_before_run - total_saved
+    return TraderDetailsSummary(
+        new_saved=total_saved,
+        total_scraped=len(portfolios) - remaining_after_run,
+        remaining=remaining_after_run,
+    )

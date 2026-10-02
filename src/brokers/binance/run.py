@@ -1,5 +1,6 @@
 from rich.panel import Panel
 
+from src.common.browser_session import close_browser_session
 from src.common.config import RESTART_FROM_SCRATCH
 from src.common.logger import log
 from src.brokers.binance.auth import get_authenticated_session
@@ -71,12 +72,14 @@ def run(force_fresh_login: bool = False) -> None:
             )
 
         log.success("Collecting per-trader profile details...")
-        total_details_saved = scrape_all_trader_details(page)
+        details_summary = scrape_all_trader_details(page)
 
         log.print(
             Panel.fit(
                 f"[bold green]Trader Detail Scraping Complete![/bold green]\n"
-                f"[cyan]New Profiles Saved:[/cyan] [yellow]{total_details_saved}[/yellow]\n"
+                f"[cyan]New Profiles Saved:[/cyan] [yellow]{details_summary.new_saved:,}[/yellow]\n"
+                f"[cyan]Total Profiles Scraped:[/cyan] [yellow]{details_summary.total_scraped:,}[/yellow]\n"
+                f"[cyan]Remaining Profiles:[/cyan] [yellow]{details_summary.remaining:,}[/yellow]\n"
                 f"[cyan]Output CSV File:[/cyan] [green]{TRADER_DETAILS_CSV_PATH}[/green]",
                 border_style="green",
             )
@@ -86,7 +89,5 @@ def run(force_fresh_login: bool = False) -> None:
         input()
     finally:
         log.warning("Closing browser session...")
-        context.close()
-        browser.close()
-        playwright.stop()
+        close_browser_session(playwright, browser, context)
         log.success("✓ Closed.")

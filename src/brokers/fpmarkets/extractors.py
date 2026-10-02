@@ -7,7 +7,6 @@ from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
 from playwright.sync_api import Page
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from src.common.config import DEBUG_SNAPSHOTS, random_sleep
 from src.common.logger import log
@@ -370,7 +369,7 @@ def _maybe_human_scroll(detail_page: Page) -> None:
 
 def scrape_trader_profile(detail_page: Page, profile_url: str) -> Dict[str, str]:
     """
-    Navigates to a trader's profile URL on Tab 2 and extracts 'Return' tab metrics:
+    Navigates to a trader's profile URL and extracts 'Return' tab metrics:
     - Top Summary: Return (total), Return (1D), Age (Days)
     - Return/period: All time, Year, Half year, Quarter, Month, Week, Day
     - Monthly: Average return (Weekly), Average return (Monthly), Return deviation, Return deviation (Monthly), Return deviation (Yearly)
@@ -380,93 +379,86 @@ def scrape_trader_profile(detail_page: Page, profile_url: str) -> Dict[str, str]
     if not profile_url:
         return metrics
 
-    try:
-        detail_page.goto(profile_url, wait_until="domcontentloaded", timeout=45000)
-        random_sleep(1000, 1800)
+    # Errors (including a Playwright TimeoutError) propagate to the
+    # orchestrator rather than being swallowed here, so a failed profile is
+    # skipped - not saved half-empty - and retried on the next run.
+    detail_page.goto(profile_url, wait_until="domcontentloaded", timeout=45000)
+    random_sleep(1000, 1800)
 
+    try:
+        detail_page.wait_for_selector(
+            ".ta-indicators_block, lib-profile-income-tab, .mat-tab-body-active, section.ta-indicators",
+            timeout=12000,
+        )
+    except Exception:
+        pass
+
+    period_metrics = wait_for_evaluate(
+        detail_page, _JS_INDICATORS_EXTRACTOR, _has_period_return_data, attempts=20, interval_ms=500
+    )
+    metrics.update(period_metrics)
+    if not _has_period_return_data(period_metrics):
+        _dump_debug_snapshot(detail_page, "return_period", profile_url)
+
+    _maybe_human_scroll(detail_page)
+
+    try:
+        detail_page.wait_for_selector("path.apexcharts-bar-area", timeout=8000)
+    except Exception:
+        pass
+
+    chart_data = wait_for_evaluate(detail_page, _JS_MONTHLY_CHART_EXTRACTOR, bool, attempts=6)
+    if chart_data:
+        metrics["monthly_chart"] = json.dumps(chart_data, ensure_ascii=False)
+
+    # Switch to the 'Trading' tab for its own indicator blocks + Leverage chart
+    if click_trading_tab(detail_page):
+        random_sleep(500, 1000)
+
+        # Re-run the same indicator extractor: the Trading tab's blocks share the
+        # ta-indicators_block structure, just with different labels (Sharpe ratio,
+        # Recovery factor, etc.) that are already handled above.
+        trading_metrics = wait_for_evaluate(
+            detail_page, _JS_INDICATORS_EXTRACTOR, _has_trading_indicator_data, attempts=20, interval_ms=500
+        )
+        metrics.update(trading_metrics)
+        if not _has_trading_indicator_data(trading_metrics):
+            _dump_debug_snapshot(detail_page, "trading_indicators", profile_url)
+
+        max_pd_data = evaluate_with_frame_fallback(detail_page, _JS_MAX_PROFIT_DRAWDOWN_EXTRACTOR)
+        if max_pd_data:
+            metrics.update(max_pd_data)
+
+        # Leverage bar chart: same ApexCharts bar pattern as the Monthly chart, but
+        # at daily resolution across many bars rather than one bar per month, so we
+        # reconstruct a per-bar date via compute_leverage_bar_dates() instead of a
+        # simple index->label pairing.
         try:
             detail_page.wait_for_selector(
-                ".ta-indicators_block, lib-profile-income-tab, .mat-tab-body-active, section.ta-indicators",
-                timeout=12000,
+                "g.apexcharts-bar-series[seriesName='chartxusedleveragelabel']",
+                timeout=8000,
             )
         except Exception:
             pass
 
-        period_metrics = wait_for_evaluate(
-            detail_page, _JS_INDICATORS_EXTRACTOR, _has_period_return_data, attempts=20, interval_ms=500
-        )
-        metrics.update(period_metrics)
-        if not _has_period_return_data(period_metrics):
-            _dump_debug_snapshot(detail_page, "return_period", profile_url)
+        leverage_payload = evaluate_with_frame_fallback(detail_page, _JS_LEVERAGE_CHART_EXTRACTOR, _has_bars)
+        if _has_bars(leverage_payload):
+            leverage_bars = compute_leverage_bar_dates(leverage_payload)
+            if leverage_bars:
+                metrics["leverage_chart"] = json.dumps(leverage_bars, ensure_ascii=False)
 
-        _maybe_human_scroll(detail_page)
+    # Switch to the 'Instruments' tab: donut legend (trade count per symbol,
+    # assuming the "Count" toggle is the default view rather than "Volume")
+    # plus the Trade Statistics list.
+    if click_instruments_tab(detail_page):
+        random_sleep(500, 1000)
 
-        try:
-            detail_page.wait_for_selector("path.apexcharts-bar-area", timeout=8000)
-        except Exception:
-            pass
+        instruments_data = evaluate_with_frame_fallback(detail_page, _JS_INSTRUMENTS_EXTRACTOR)
+        if instruments_data:
+            metrics["instruments"] = json.dumps(instruments_data, ensure_ascii=False)
 
-        chart_data = wait_for_evaluate(detail_page, _JS_MONTHLY_CHART_EXTRACTOR, bool, attempts=6)
-        if chart_data:
-            metrics["monthly_chart"] = json.dumps(chart_data, ensure_ascii=False)
-
-        # Switch to the 'Trading' tab for its own indicator blocks + Leverage chart
-        if click_trading_tab(detail_page):
-            random_sleep(500, 1000)
-
-            # Re-run the same indicator extractor: the Trading tab's blocks share the
-            # ta-indicators_block structure, just with different labels (Sharpe ratio,
-            # Recovery factor, etc.) that are already handled above.
-            trading_metrics = wait_for_evaluate(
-                detail_page, _JS_INDICATORS_EXTRACTOR, _has_trading_indicator_data, attempts=20, interval_ms=500
-            )
-            metrics.update(trading_metrics)
-            if not _has_trading_indicator_data(trading_metrics):
-                _dump_debug_snapshot(detail_page, "trading_indicators", profile_url)
-
-            max_pd_data = evaluate_with_frame_fallback(detail_page, _JS_MAX_PROFIT_DRAWDOWN_EXTRACTOR)
-            if max_pd_data:
-                metrics.update(max_pd_data)
-
-            # Leverage bar chart: same ApexCharts bar pattern as the Monthly chart, but
-            # at daily resolution across many bars rather than one bar per month, so we
-            # reconstruct a per-bar date via compute_leverage_bar_dates() instead of a
-            # simple index->label pairing.
-            try:
-                detail_page.wait_for_selector(
-                    "g.apexcharts-bar-series[seriesName='chartxusedleveragelabel']",
-                    timeout=8000,
-                )
-            except Exception:
-                pass
-
-            leverage_payload = evaluate_with_frame_fallback(detail_page, _JS_LEVERAGE_CHART_EXTRACTOR, _has_bars)
-            if _has_bars(leverage_payload):
-                leverage_bars = compute_leverage_bar_dates(leverage_payload)
-                if leverage_bars:
-                    metrics["leverage_chart"] = json.dumps(leverage_bars, ensure_ascii=False)
-
-        # Switch to the 'Instruments' tab: donut legend (trade count per symbol,
-        # assuming the "Count" toggle is the default view rather than "Volume")
-        # plus the Trade Statistics list.
-        if click_instruments_tab(detail_page):
-            random_sleep(500, 1000)
-
-            instruments_data = evaluate_with_frame_fallback(detail_page, _JS_INSTRUMENTS_EXTRACTOR)
-            if instruments_data:
-                metrics["instruments"] = json.dumps(instruments_data, ensure_ascii=False)
-
-            trade_stats_data = evaluate_with_frame_fallback(detail_page, _JS_TRADE_STATS_EXTRACTOR)
-            if trade_stats_data:
-                metrics["trade_statistics"] = json.dumps(trade_stats_data, ensure_ascii=False)
-
-    except PlaywrightTimeoutError:
-        # Propagate rather than swallow: a timeout here usually signals the
-        # site throttling/blocking the session, so the orchestrator's caller
-        # treats it as fatal (see scrape_all_leader_profiles) instead of
-        # silently continuing on a possibly-blocked session.
-        raise
-    except Exception as e:
-        log.warning(f"Notice reading profile ({profile_url}): {e}")
+        trade_stats_data = evaluate_with_frame_fallback(detail_page, _JS_TRADE_STATS_EXTRACTOR)
+        if trade_stats_data:
+            metrics["trade_statistics"] = json.dumps(trade_stats_data, ensure_ascii=False)
 
     return metrics

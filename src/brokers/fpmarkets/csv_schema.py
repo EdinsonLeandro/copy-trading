@@ -1,4 +1,18 @@
-CSV_HEADERS = [
+LEADER_URLS_CSV_HEADERS = [
+    "name",
+    "trader_id",
+    "profile_url",
+    "page_number",
+    "scraped_at",
+]
+
+# Columns used to de-dupe leaders already discovered in a previous run.
+LEADER_URLS_ID_FIELDS = ("trader_id", "profile_url")
+
+# Phase 2 output: per-trader profile details, keyed off the URLs collected
+# into LEADER_URLS_CSV_PATH. name/page_number are carried over from the
+# phase-1 row.
+TRADER_DETAILS_CSV_HEADERS = [
     "name",
     "trader_id",
     "profile_url",
@@ -44,4 +58,4 @@ CSV_HEADERS = [
 ]
 
 # Columns used to de-dupe traders already scraped in a previous run.
-ID_FIELDS = ("trader_id", "profile_url")
+TRADER_DETAILS_ID_FIELDS = ("trader_id", "profile_url")

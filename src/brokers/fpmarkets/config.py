@@ -26,7 +26,19 @@ DEBUG_DIR = _DEBUG_DIR / BROKER_NAME
 AUTH_STATE_PATH = _AUTH_STATE_DIR / f"{BROKER_NAME}.json"
 
 TRADER_DETAILS_CSV_PATH = DATA_DIR / "trader_details.csv"
-PROFILES_CSV_PATH = TRADER_DETAILS_CSV_PATH
+
+# Phase 1 output: the leader (trader) profile URLs discovered while
+# paginating the Leaders list, plus the card name (the profile page itself
+# doesn't carry it). Kept separate from TRADER_DETAILS_CSV_PATH since that
+# file is for the per-profile detail scrape (phase 2), a distinct resumable
+# phase that reads this file as its input list.
+LEADER_URLS_CSV_PATH = DATA_DIR / "leader_urls.csv"
+
+# Written once scrape_all_leader_urls reaches the true last page (Next
+# button disabled), not just an early/max_pages stop. Its presence lets a
+# rerun skip straight to phase 2 instead of re-paginating the entire
+# Leaders list just to confirm there's nothing new to add.
+LEADER_URLS_DONE_MARKER = DATA_DIR / "leader_urls.done"
 
 
 def ensure_directories() -> None:
