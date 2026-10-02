@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Edit(./.env)",
+      "Write(./.env)",
+      "Bash(cat .env)",
+      "Bash(type .env)",
+      "Bash(Get-Content .env)",
+      "Read(./auth_state/**)",
+      "Edit(./auth_state/**)",
+      "Write(./auth_state/**)"
+    ]
+  }
+}
