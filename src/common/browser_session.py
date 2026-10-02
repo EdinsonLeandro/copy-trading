@@ -1,20 +1,24 @@
+import json
 import random
 import time
 from pathlib import Path
 from typing import Callable, Optional, Tuple
 
-from playwright.sync_api import Browser, BrowserContext, Locator, Page, Playwright, sync_playwright
+# Patchright is a drop-in fork of Playwright (same API) that patches the
+# automation leaks Playwright itself can't hide from page scripts: the CDP
+# `Runtime.enable` call fingerprinting scripts detect, and `page.evaluate`
+# running in the page's own JS world (Patchright runs it in an isolated
+# world by default, so the site's scripts can't observe our extraction JS).
+from patchright.sync_api import BrowserContext, Locator, Page, Playwright, sync_playwright
 
-from src.common.config import HEADLESS, random_sleep
+from src.common.config import BROWSER_CHANNEL, HEADLESS, random_sleep
 from src.common.logger import log
 
-# No hardcoded user_agent is passed to new_context() below - Playwright's
-# default UA always matches the actual installed Chromium build across the
-# main thread, Workers, and Client Hints (navigator.userAgentData). A pinned
-# string here (previously a Chrome/124 UA against an actually-newer Chromium
-# build) instead goes stale over Playwright/Chromium upgrades and creates
-# exactly the kind of UA-vs-Client-Hints mismatch fingerprinting scripts
-# (e.g. CreepJS) flag as a bot tell.
+# No hardcoded user_agent is passed to the context below - the browser's
+# default UA always matches the actual browser build across the main
+# thread, Workers, and Client Hints (navigator.userAgentData). A pinned
+# string goes stale over browser upgrades and creates exactly the kind of
+# UA-vs-Client-Hints mismatch fingerprinting scripts (e.g. CreepJS) flag.
 
 
 def human_type(locator: Locator, text: str) -> None:
@@ -30,9 +34,9 @@ def human_type(locator: Locator, text: str) -> None:
 def maximize_window(page: Page) -> None:
     """Force-maximizes the OS browser window via CDP.
 
-    `--start-maximized` alone is unreliable once combined with `viewport=None` +
-    a freshly-opened `new_page()`: the window can stay at its default launch size
-    instead of adopting the full screen, especially on Windows. CDP's
+    `--start-maximized` alone is unreliable once combined with no fixed
+    viewport, especially on Windows: the window can stay at its default
+    launch size instead of adopting the full screen. CDP's
     `Browser.setWindowBounds` is the reliable way to force it.
     """
     try:
@@ -46,107 +50,169 @@ def maximize_window(page: Page) -> None:
         log.debug(f"Could not force-maximize browser window: {e}")
 
 
-def launch_browser(playwright: Playwright, headless: bool = HEADLESS) -> Browser:
-    """Launches Chromium with anti-detection flags, auto-installing the binary if missing."""
-    launch_args = [
-        "--disable-blink-features=AutomationControlled",
-        "--start-maximized",
-        "--no-sandbox",
-    ]
+def launch_persistent_browser(
+    playwright: Playwright,
+    profile_dir: Path,
+    headless: bool = HEADLESS,
+) -> BrowserContext:
+    """Launches the browser on a persistent on-disk profile (`profile_dir`).
+
+    A persistent profile keeps IndexedDB, cache, service workers and history
+    between runs, so the site sees the same returning device every time
+    instead of a brand-new empty browser (which is what a fresh
+    `new_context()` looks like, even with saved cookies loaded into it).
+
+    Runs the installed Google Chrome by default (BROWSER_CHANNEL=chrome):
+    the bundled Chromium build announces itself as "Chromium" without a
+    "Google Chrome" brand in its Client Hints, which almost no real visitor
+    sends.
+    """
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    launch_kwargs = dict(
+        user_data_dir=str(profile_dir),
+        channel=BROWSER_CHANNEL or None,
+        headless=headless,
+        no_viewport=True,
+        args=[
+            "--disable-blink-features=AutomationControlled",
+            "--start-maximized",
+        ],
+        # `--enable-automation` shows the "controlled by automated test
+        # software" bar and switches on automation-only browser behavior.
+        ignore_default_args=["--enable-automation"],
+    )
     try:
-        return playwright.chromium.launch(headless=headless, args=launch_args)
+        return playwright.chromium.launch_persistent_context(**launch_kwargs)
     except Exception as e:
-        if "Executable doesn't exist" in str(e) or "playwright install" in str(e):
-            log.warning("Playwright Chromium browser binary not found. Downloading automatically...")
-            import subprocess
-            import sys
-            subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
-            log.success("✓ Chromium browser installed successfully!")
-            return playwright.chromium.launch(headless=headless, args=launch_args)
-        raise
+        if "Executable doesn't exist" not in str(e) and "install" not in str(e):
+            raise
+        if BROWSER_CHANNEL:
+            log.error(
+                f"Browser channel '{BROWSER_CHANNEL}' is not installed. Install Google Chrome, "
+                "or set BROWSER_CHANNEL= (empty) in .env to use the bundled Chromium."
+            )
+            raise
+        log.warning("Bundled Chromium binary not found. Downloading automatically...")
+        import subprocess
+        import sys
+        subprocess.run([sys.executable, "-m", "patchright", "install", "chromium"], check=True)
+        log.success("✓ Chromium browser installed successfully!")
+        return playwright.chromium.launch_persistent_context(**launch_kwargs)
+
+
+def _restore_missing_cookies(context: BrowserContext, auth_state_path: Path) -> None:
+    """Adds back cookies from the last saved `auth_state_path` snapshot that
+    the profile doesn't already have.
+
+    Chrome drops session-only cookies (no expiry) when the browser closes,
+    even on a persistent profile, and some portals keep the login in one of
+    those. Only cookies missing from the profile are added, so fresher ones
+    the profile already holds (e.g. rotated tokens) are never overwritten
+    with stale copies.
+    """
+    if not auth_state_path.exists():
+        return
+    try:
+        saved = json.loads(auth_state_path.read_text(encoding="utf-8")).get("cookies", [])
+    except Exception as e:
+        log.debug(f"Could not read saved session snapshot: {e}")
+        return
+
+    present = {(c["name"], c["domain"], c["path"]) for c in context.cookies()}
+    missing = [c for c in saved if (c["name"], c["domain"], c["path"]) not in present]
+    if missing:
+        context.add_cookies(missing)
+        log.debug(f"Restored {len(missing)} cookie(s) missing from the browser profile.")
 
 
 def get_authenticated_session(
+    profile_dir: Path,
     auth_state_path: Path,
     home_url: str,
     perform_login: Callable[[Page], bool],
     is_session_valid: Callable[[Page], bool],
     headless: bool = HEADLESS,
     force_fresh_login: bool = False,
-) -> Tuple[Optional[Playwright], Optional[Browser], Optional[BrowserContext], Optional[Page]]:
+) -> Tuple[Optional[Playwright], Optional[BrowserContext], Optional[Page]]:
     """
-    Launches a Playwright browser session with randomized timing and anti-bot arguments.
-    If `auth_state_path` exists and force_fresh_login is False, reuses saved session
-    cookies (validated via `is_session_valid`). Otherwise runs `perform_login` and
-    saves the resulting state to `auth_state_path`.
+    Launches the browser on the persistent profile at `profile_dir` and
+    returns a logged-in (playwright, context, page).
+
+    If the profile was used before and force_fresh_login is False, reuses its
+    session (validated via `is_session_valid`). Otherwise runs `perform_login`.
+    After a valid session or successful login, a cookie snapshot is saved to
+    `auth_state_path` (see _restore_missing_cookies for why).
 
     `perform_login` and `is_session_valid` are broker-specific: each site has its
     own login form/selectors and its own way of telling whether a session landed
     back on the login page.
     """
-    playwright = sync_playwright().start()
-    browser = launch_browser(playwright, headless)
+    # Checked before launching, since launching creates the directory.
+    profile_was_used = profile_dir.exists() and any(profile_dir.iterdir())
 
-    if not force_fresh_login and auth_state_path.exists():
-        log.info(f"Found existing session at {auth_state_path.name}. Reusing auth state...")
-        context = browser.new_context(
-            storage_state=str(auth_state_path),
-            viewport=None,
-        )
-        page = context.new_page()
-        maximize_window(page)
+    playwright = sync_playwright().start()
+    try:
+        context = launch_persistent_browser(playwright, profile_dir, headless)
+    except Exception:
+        playwright.stop()
+        raise
+
+    # A persistent context opens with one tab already; reuse it rather than
+    # leaving a stray blank tab next to the one we drive.
+    page = context.pages[0] if context.pages else context.new_page()
+    maximize_window(page)
+
+    if force_fresh_login:
+        log.info("Fresh login requested; clearing the profile's cookies...")
+        auth_state_path.unlink(missing_ok=True)
+        context.clear_cookies()
+    elif profile_was_used:
+        log.info(f"Found existing browser profile at {profile_dir.name}. Reusing its session...")
+        _restore_missing_cookies(context, auth_state_path)
         page.goto(home_url, wait_until="domcontentloaded")
         random_sleep(1500, 3000)
 
         if is_session_valid(page):
             log.success(f"✓ Existing session is valid! URL: {page.url}")
-            return playwright, browser, context, page
-        else:
-            log.warning("Saved session expired. Reusing browser window for fresh login...")
-            auth_state_path.unlink(missing_ok=True)
-            context.clear_cookies()
-    else:
-        context = browser.new_context(viewport=None)
-        page = context.new_page()
-        maximize_window(page)
+            context.storage_state(path=str(auth_state_path))
+            return playwright, context, page
+
+        log.warning("Saved session expired. Logging in again in the same browser profile...")
+        auth_state_path.unlink(missing_ok=True)
+        context.clear_cookies()
 
     try:
         login_success = perform_login(page)
     except Exception:
         log.error("perform_login raised an exception. Closing browser session...")
-        context.close()
-        browser.close()
-        playwright.stop()
+        close_browser_session(playwright, context)
         raise
 
     if login_success:
         auth_state_path.parent.mkdir(parents=True, exist_ok=True)
         context.storage_state(path=str(auth_state_path))
-        log.success(f"✓ Authentication state saved to {auth_state_path.name}")
-        return playwright, browser, context, page
-    else:
-        log.error("Login failed. Browser session will remain open for inspection for 10 seconds...")
-        time.sleep(10)
-        context.close()
-        browser.close()
-        playwright.stop()
-        return None, None, None, None
+        log.success(f"✓ Logged in; session kept in browser profile {profile_dir.name}")
+        return playwright, context, page
+
+    log.error("Login failed. Browser session will remain open for inspection for 10 seconds...")
+    time.sleep(10)
+    close_browser_session(playwright, context)
+    return None, None, None
 
 
 def close_browser_session(
     playwright: Optional[Playwright],
-    browser: Optional[Browser],
     context: Optional[BrowserContext],
 ) -> None:
     """
     Tears down a session from get_authenticated_session, closing each piece
     independently so one failing step (e.g. a context left wedged by a page
     that stopped responding) doesn't skip the rest or mask the original
-    error that triggered the shutdown.
+    error that triggered the shutdown. Closing a persistent context also
+    closes the browser and flushes the profile to disk.
     """
     for name, closer in (
         ("context", context.close if context else None),
-        ("browser", browser.close if browser else None),
         ("playwright", playwright.stop if playwright else None),
     ):
         if closer is None:

@@ -3,8 +3,8 @@ import random
 from datetime import datetime, timezone
 from typing import Optional
 
-from playwright.sync_api import Page
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+from patchright.sync_api import Page
+from patchright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from src.common.config import (
     DEBUG_SNAPSHOTS,
@@ -12,6 +12,7 @@ from src.common.config import (
     MIN_DELAY_MS,
     SESSION_CAP_MAX,
     SESSION_CAP_MIN,
+    long_tail_sleep,
     random_sleep,
 )
 from src.common.csv_store import append_rows, init_csv_file, load_existing_ids
@@ -151,12 +152,15 @@ def clear_debug_snapshots() -> None:
 
 
 # Phase 2 anti-detection pacing (see scrape_all_trader_details): a long
-# "human break" every LONG_BREAK_EVERY_MIN-LONG_BREAK_EVERY_MAX profiles, and
+# "human break" of LONG_BREAK_MIN_SECONDS-LONG_BREAK_MAX_SECONDS every
+# LONG_BREAK_EVERY_MIN-LONG_BREAK_EVERY_MAX profiles, and
 # a per-run cap of SESSION_CAP_MIN-SESSION_CAP_MAX profiles (set in .env,
 # see src/common/config.py) so a single session doesn't hammer the site for
 # the full backlog in one unbroken run.
 LONG_BREAK_EVERY_MIN = 20
 LONG_BREAK_EVERY_MAX = 40
+LONG_BREAK_MIN_SECONDS = 60
+LONG_BREAK_MAX_SECONDS = 180
 
 
 def _load_leader_urls() -> list:
@@ -190,8 +194,9 @@ def scrape_all_trader_details(page: Page, max_profiles: Optional[int] = None) ->
     whole run - except a Playwright TimeoutError, which signals FP Markets may
     be throttling/blocking the session, so that aborts the run instead.
 
-    Anti-detection pacing: on top of the random_sleep between profiles, a
-    longer "human break" is taken every LONG_BREAK_EVERY_MIN-MAX profiles,
+    Anti-detection pacing: on top of a long-tailed pause between profiles
+    (long_tail_sleep: usually short, sometimes much longer), a longer
+    "human break" is taken every LONG_BREAK_EVERY_MIN-MAX profiles,
     and - when the caller doesn't pass an explicit `max_profiles` - the run
     caps itself at a random SESSION_CAP_MIN-MAX profiles rather than
     ploughing through the whole backlog in one unbroken session.
@@ -252,12 +257,12 @@ def scrape_all_trader_details(page: Page, max_profiles: Optional[int] = None) ->
         )
 
         if i >= next_break_at:
-            break_ms = random.randint(20 * MIN_DELAY_MS, 20 * MAX_DELAY_MS)
-            log.info(f"Taking a longer human-like break ({break_ms / 1000:.0f}s) after {i} profiles...")
-            random_sleep(break_ms, break_ms)
+            break_seconds = random.randint(LONG_BREAK_MIN_SECONDS, LONG_BREAK_MAX_SECONDS)
+            log.info(f"Taking a longer human-like break ({break_seconds}s) after {i} profiles...")
+            random_sleep(break_seconds * 1000, break_seconds * 1000)
             next_break_at = i + random.randint(LONG_BREAK_EVERY_MIN, LONG_BREAK_EVERY_MAX)
         else:
-            random_sleep(MIN_DELAY_MS, MAX_DELAY_MS)
+            long_tail_sleep(MIN_DELAY_MS, MAX_DELAY_MS)
 
     log.success(f"✓ Trader detail scraping complete! All details saved in: {TRADER_DETAILS_CSV_PATH}")
     remaining_after_run = backlog_before_run - total_saved

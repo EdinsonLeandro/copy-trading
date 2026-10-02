@@ -1,10 +1,11 @@
-from playwright.sync_api import Page
+from patchright.sync_api import Page
 
 from src.common.browser_session import get_authenticated_session as _get_authenticated_session, human_type
 from src.common.config import HEADLESS, random_sleep
 from src.common.logger import log
 from src.brokers.fpmarkets.config import (
     AUTH_STATE_PATH,
+    BROWSER_PROFILE_DIR,
     DEBUG_DIR,
     FPMARKETS_EMAIL,
     FPMARKETS_PASSWORD,
@@ -123,11 +124,12 @@ def perform_login(page: Page) -> bool:
 
 def get_authenticated_session(force_fresh_login: bool = False):
     """
-    Launches a Playwright browser session with randomized timing and anti-bot arguments.
+    Launches the browser on this broker's persistent profile with anti-bot settings.
     If a saved FP Markets session exists and force_fresh_login is False, reuses it.
     Otherwise, performs a fresh login and saves the new session state.
     """
     return _get_authenticated_session(
+        profile_dir=BROWSER_PROFILE_DIR,
         auth_state_path=AUTH_STATE_PATH,
         home_url=HOME_URL,
         perform_login=perform_login,

@@ -1,6 +1,6 @@
 from typing import Any, Callable, Optional
 
-from playwright.sync_api import Page
+from patchright.sync_api import Page
 
 from src.common.config import random_sleep
 from src.common.logger import log

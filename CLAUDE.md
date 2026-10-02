@@ -1,12 +1,12 @@
 # CLAUDE.md
 
-A Playwright scraper that logs into broker portals (FP Markets, Binance) and saves public copy-trading leader statistics to CSV. It does not place trades. See @README.md for setup and the full project layout.
+A Playwright (Patchright fork) scraper that logs into broker portals (FP Markets, Binance) and saves public copy-trading leader statistics to CSV. It does not place trades. See @README.md for setup and the full project layout.
 
 ## Commands
 
 ```bash
 .\.venv\Scripts\Activate.ps1          # Windows; activate the venv first
-pip install -r requirements.txt && playwright install chromium
+pip install -r requirements.txt          # drives installed Google Chrome via Patchright
 python main.py --broker fpmarkets     # or: binance
 python main.py --broker binance --force-fresh-login
 pytest                                # unit tests (no browser needed)
@@ -14,6 +14,7 @@ pytest                                # unit tests (no browser needed)
 
 ## Architecture
 
+- Import from `patchright.sync_api`, never `playwright.sync_api`: Patchright raises its own `TimeoutError` class, so a mixed import silently breaks the Phase 2 timeout abort.
 - `src/common/` must stay broker-agnostic: no broker names, URLs or data fields. Shared helpers: `browser_session.py` (launch, saved sessions, `close_browser_session`), `playwright_utils.py` (`evaluate_with_frame_fallback`, `wait_for_evaluate`, `click_tab`), `csv_store.py` (`init_csv_file`, `append_rows`, `load_existing_ids`), `config.py` (env settings, `random_sleep`), `logger.py` (`log`), `scrape_summary.py`.
 - Each broker in `src/brokers/<name>/` has the same modules: `config`, `auth`, `csv_schema`, `navigation`, `extractors`, `orchestrator`, `run`. Keep binance and fpmarkets symmetrical; when changing one, check whether the other needs the same change.
 - New broker = new package with that shape + register its `run()` in `BROKER_RUNNERS` in `main.py`.

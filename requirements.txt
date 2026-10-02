@@ -1,5 +1,6 @@
 # Core Web Automation & Scraping
-playwright>=1.42.0
+# Patchright: drop-in Playwright fork that hides automation leaks (see src/common/browser_session.py)
+patchright>=1.63.0
 
 # Environment Variables & Configuration
 python-dotenv>=1.0.1

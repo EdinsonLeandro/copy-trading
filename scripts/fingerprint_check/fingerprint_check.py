@@ -5,7 +5,7 @@ Launches the exact same browser/context configuration every broker session
 in this repo uses (see src/common/browser_session.py), points it at two
 public fingerprint-check sites instead of a real broker, and saves
 screenshots + a few key raw navigator/Client-Hints values so what the
-current Playwright setup exposes can be reviewed before/after any
+current Patchright setup exposes can be reviewed before/after any
 anti-detection change.
 
 Not part of the resumable production pipeline - a dev-only diagnostic.
@@ -15,15 +15,17 @@ recorded findings.
 Usage:
     python scripts/fingerprint_check/fingerprint_check.py
 """
+import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from playwright.sync_api import sync_playwright  # noqa: E402
+from patchright.sync_api import sync_playwright  # noqa: E402
 
-from src.common.browser_session import launch_browser  # noqa: E402
+from src.common.browser_session import close_browser_session, launch_persistent_browser  # noqa: E402
 from src.common.logger import log  # noqa: E402
 
 OUT_DIR = Path(__file__).resolve().parent / "fingerprint_check_results"
@@ -32,10 +34,11 @@ OUT_DIR = Path(__file__).resolve().parent / "fingerprint_check_results"
 def main() -> None:
     OUT_DIR.mkdir(exist_ok=True)
 
+    # Throwaway profile so this check never touches a broker's real one.
+    profile_dir = Path(tempfile.mkdtemp(prefix="fingerprint_check_"))
     playwright = sync_playwright().start()
-    browser = launch_browser(playwright, headless=False)
-    context = browser.new_context(viewport=None)
-    page = context.new_page()
+    context = launch_persistent_browser(playwright, profile_dir, headless=False)
+    page = context.pages[0] if context.pages else context.new_page()
 
     try:
         log.info("Checking bot.sannysoft.com ...")
@@ -73,9 +76,8 @@ def main() -> None:
 
     finally:
         time.sleep(2)
-        context.close()
-        browser.close()
-        playwright.stop()
+        close_browser_session(playwright, context)
+        shutil.rmtree(profile_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

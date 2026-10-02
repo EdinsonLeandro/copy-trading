@@ -31,6 +31,10 @@ EMAIL_SUBMIT_WAIT_SECONDS = 30
 DATA_DIR = _DATA_DIR / BROKER_NAME
 DEBUG_DIR = _DEBUG_DIR / BROKER_NAME
 AUTH_STATE_PATH = _AUTH_STATE_DIR / f"{BROKER_NAME}.json"
+# Persistent Chrome profile (cookies, IndexedDB, cache, history) reused on
+# every run so the site sees the same returning device. Holds session
+# cookies, so it lives under the gitignored auth_state/ like AUTH_STATE_PATH.
+BROWSER_PROFILE_DIR = _AUTH_STATE_DIR / f"{BROKER_NAME}_profile"
 
 TRADER_DETAILS_CSV_PATH = DATA_DIR / "trader_details.csv"
 

@@ -6,7 +6,7 @@ import time
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
-from playwright.sync_api import Page
+from patchright.sync_api import Page
 
 from src.common.config import DEBUG_SNAPSHOTS, random_sleep
 from src.common.logger import log

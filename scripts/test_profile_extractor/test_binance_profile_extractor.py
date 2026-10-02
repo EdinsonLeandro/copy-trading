@@ -1,7 +1,7 @@
 """
 Standalone sanity check for src/brokers/binance/extractors.py.
 
-Reuses the already-saved Binance session (auth_state/binance.json) and runs
+Reuses the saved Binance browser profile (auth_state/binance_profile/) and runs
 scrape_trader_profile() against one or more real profile URLs, saving the
 extracted fields to a CSV (scripts/binance_profile_extractor_test_results.csv)
 so they can be compared against what's rendered in the browser before wiring
@@ -29,6 +29,7 @@ from src.brokers.binance.auth import get_authenticated_session
 from src.brokers.binance.config import PORTFOLIO_URLS_CSV_PATH
 from src.brokers.binance.csv_schema import TRADER_DETAILS_CSV_HEADERS
 from src.brokers.binance.extractors import scrape_trader_profile
+from src.common.browser_session import close_browser_session
 from src.common.logger import log
 
 DEFAULT_SAMPLE_SIZE = 30
@@ -53,7 +54,7 @@ def main() -> None:
         raise SystemExit(1)
 
     log.info(f"Testing extractor against {len(urls)} profile(s)...")
-    playwright, browser, context, page = get_authenticated_session(force_fresh_login=False)
+    playwright, context, page = get_authenticated_session(force_fresh_login=False)
 
     if not page:
         log.error("Failed to open an authenticated Binance session.")
@@ -75,9 +76,7 @@ def main() -> None:
             rows.append(row)
             log.success(f"✓ Extracted {row.get('name') or '(no name)'}")
     finally:
-        context.close()
-        browser.close()
-        playwright.stop()
+        close_browser_session(playwright, context)
 
     with open(OUTPUT_CSV_PATH, mode="w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=TRADER_DETAILS_CSV_HEADERS, extrasaction="ignore")

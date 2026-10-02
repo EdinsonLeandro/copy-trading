@@ -5,12 +5,12 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from playwright.sync_api import Page
+from patchright.sync_api import Page
 
 from src.common.config import DEBUG_SNAPSHOTS, random_sleep
 from src.common.logger import log
 from src.common.playwright_utils import wait_for_evaluate
-from src.brokers.binance.config import DEBUG_DIR
+from src.brokers.binance.config import COPY_TRADING_URL, DEBUG_DIR
 from src.brokers.binance.navigation import (
     ACTIVE_TAB_PANE_SELECTOR,
     click_copy_traders_tab,
@@ -470,7 +470,13 @@ def _capture_roi_chart_data(detail_page: Page, profile_url: str, portfolio_id: s
         with detail_page.expect_response(
             lambda r: _is_roi_chart_response(r, portfolio_id), timeout=20000
         ) as response_info:
-            detail_page.goto(profile_url, wait_until="domcontentloaded", timeout=60000)
+            # Real Chrome sends the leaderboard as the Referer when a profile
+            # is opened from it (checked via document.referrer on a
+            # ctrl+clicked card); a bare goto would send none, as if every
+            # profile URL were typed into the address bar.
+            detail_page.goto(
+                profile_url, wait_until="domcontentloaded", timeout=60000, referer=COPY_TRADING_URL
+            )
             navigated = True
         return response_info.value.json()
     except Exception as e:

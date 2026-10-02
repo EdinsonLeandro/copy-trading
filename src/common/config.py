@@ -17,6 +17,11 @@ DEBUG_SNAPSHOTS = os.getenv("DEBUG_SNAPSHOTS", "False").lower() in ("true", "1",
 MIN_DELAY_MS = int(os.getenv("MIN_DELAY_MS", "300"))
 MAX_DELAY_MS = int(os.getenv("MAX_DELAY_MS", "800"))
 
+# Which installed browser to drive. "chrome" (the default) uses the real
+# Google Chrome install, whose Client Hints carry the "Google Chrome" brand
+# like any normal visitor; empty falls back to the bundled Chromium build.
+BROWSER_CHANNEL = os.getenv("BROWSER_CHANNEL", "chrome").strip()
+
 # When True, a broker's run() wipes its previously saved output (URL/detail
 # CSVs, the phase-1 completion marker, and any debug snapshots) before
 # starting, so the whole pipeline restarts from a clean slate instead of
@@ -40,6 +45,35 @@ def random_sleep(min_ms: int = MIN_DELAY_MS, max_ms: int = MAX_DELAY_MS):
     """Sleeps for a random duration between min and max milliseconds."""
     delay_sec = get_random_delay_ms(min_ms, max_ms) / 1000.0
     time.sleep(delay_sec)
+
+
+# Long-tailed pause tiers: (cumulative probability, low, high) with the
+# bounds as multiples of max_ms. A uniform min-max delay produces an
+# unnaturally regular rhythm; a real visitor mostly moves on quickly but
+# sometimes lingers on a page or gets distracted for a while. With the
+# default 300-800 ms that is: 70% 0.3-0.8 s, 23% 2.4-8 s, 7% 12-36 s.
+_LONG_TAIL_MEDIUM_ROLL = 0.70
+_LONG_TAIL_LONG_ROLL = 0.93
+_LONG_TAIL_MEDIUM_RANGE = (3, 10)
+_LONG_TAIL_LONG_RANGE = (15, 45)
+
+
+def get_long_tail_delay_ms(min_ms: int = MIN_DELAY_MS, max_ms: int = MAX_DELAY_MS, rng=random) -> int:
+    """Returns a random delay that is usually short (min_ms-max_ms) but
+    occasionally several times longer (see the tiers above). Which tier is
+    used is picked at random on every call."""
+    low, high = min(min_ms, max_ms), max(min_ms, max_ms)
+    roll = rng.random()
+    if roll < _LONG_TAIL_MEDIUM_ROLL:
+        return rng.randint(low, high)
+    if roll < _LONG_TAIL_LONG_ROLL:
+        return rng.randint(_LONG_TAIL_MEDIUM_RANGE[0] * high, _LONG_TAIL_MEDIUM_RANGE[1] * high)
+    return rng.randint(_LONG_TAIL_LONG_RANGE[0] * high, _LONG_TAIL_LONG_RANGE[1] * high)
+
+
+def long_tail_sleep(min_ms: int = MIN_DELAY_MS, max_ms: int = MAX_DELAY_MS) -> None:
+    """Sleeps for get_long_tail_delay_ms(min_ms, max_ms) milliseconds."""
+    time.sleep(get_long_tail_delay_ms(min_ms, max_ms) / 1000.0)
 
 
 # Root output directories. Each broker keeps its own subfolder under these

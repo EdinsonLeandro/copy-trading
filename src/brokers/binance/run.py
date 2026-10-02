@@ -47,7 +47,7 @@ def run(force_fresh_login: bool = False) -> None:
         raise SystemExit(1)
 
     log.success("Starting authentication flow...")
-    playwright, browser, context, page = get_authenticated_session(force_fresh_login=force_fresh_login)
+    playwright, context, page = get_authenticated_session(force_fresh_login=force_fresh_login)
 
     if not page:
         log.error("❌ Failed to authenticate with Binance.")
@@ -89,5 +89,5 @@ def run(force_fresh_login: bool = False) -> None:
         input()
     finally:
         log.warning("Closing browser session...")
-        close_browser_session(playwright, browser, context)
+        close_browser_session(playwright, context)
         log.success("✓ Closed.")

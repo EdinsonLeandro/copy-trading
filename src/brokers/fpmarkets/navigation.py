@@ -2,7 +2,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from playwright.sync_api import Frame, Page
+from patchright.sync_api import Frame, Page
 
 from src.common.config import random_sleep
 from src.common.logger import log

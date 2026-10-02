@@ -23,7 +23,7 @@ copy-trading/
 ├── logs/                    # Auto-captured run logs (per broker, via log.set_label)
 ├── debug/<broker>/          # Auto-captured screenshots + HTML dumps on login/extraction errors, per broker
 ├── data/<broker>/           # Extracted CSV datasets, per broker
-├── auth_state/<broker>.json # Saved login session per broker (gitignored)
+├── auth_state/             # Per-broker Chrome profile (<broker>_profile/) + cookie snapshot (<broker>.json), gitignored
 ├── scripts/
 │   └── test_binance_profile_extractor.py  # Dev-only sanity check for binance/extractors.py
 ├── tests/
@@ -33,7 +33,7 @@ copy-trading/
     ├── common/               # Broker-agnostic infrastructure
     │   ├── config.py          # BASE_DIR, HEADLESS, DEBUG_SNAPSHOTS, delay settings, ensure_directories
     │   ├── logger.py          # Leveled console + file logger (info/success/warning/error/debug)
-    │   ├── browser_session.py # Playwright launch, anti-detection args, storage-state reuse, human_type
+    │   ├── browser_session.py # Patchright/Chrome launch on a persistent profile, anti-detection args, human_type
     │   ├── playwright_utils.py# Frame-fallback JS eval, poll-until-populated, generic tab clicking
     │   └── csv_store.py       # Generic CSV init/append/dedup, parameterized by each broker's own schema
     │
@@ -93,16 +93,16 @@ source .venv/bin/activate
 
 ---
 
-### 2. Install Dependencies & Playwright Browsers
+### 2. Install Dependencies & Browser
 
 Install the Python libraries:
 ```bash
 pip install -r requirements.txt
 ```
 
-Install the Playwright browser binaries (Chromium):
+The scraper drives your installed **Google Chrome** by default (`BROWSER_CHANNEL=chrome`), through [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python), a drop-in Playwright fork that hides automation leaks. Install Chrome if you don't have it. To use the bundled Chromium instead, set `BROWSER_CHANNEL=` (empty) and run:
 ```bash
-playwright install chromium
+patchright install chromium
 ```
 
 ---
@@ -117,6 +117,7 @@ playwright install chromium
 HEADLESS=False
 MIN_DELAY_MS=300
 MAX_DELAY_MS=800
+BROWSER_CHANNEL=chrome
 DEBUG_SNAPSHOTS=False
 RESTART_FROM_SCRATCH=False
 SESSION_CAP_MIN=100
@@ -139,7 +140,7 @@ BINANCE_PASSWORD=your_actual_password
 > `HEADLESS=False` ensures you can visually watch the browser navigate, fill the fields, and handle any 2FA/PIN prompts if requested by the portal.
 
 > [!WARNING]
-> `.env` and the generated `auth_state/<broker>.json` files (saved login sessions/cookies) contain real credentials/session data in plaintext. Both are gitignored, but keep them out of any screenshots, logs, or shared copies of this folder.
+> `.env` and the generated `auth_state/` contents (per-broker browser profiles and session cookies) contain real credentials/session data in plaintext. Both are gitignored, but keep them out of any screenshots, logs, or shared copies of this folder.
 
 ---
 
@@ -158,7 +159,7 @@ Both brokers run two phases in sequence within a single browser session: Phase 1
 > Binance does not allow multiple simultaneous sessions on one account login, so Phase 2 cannot be parallelized across multiple browser instances - both phases run sequentially in a single session.
 
 ### Key Features
-* **Session Persistence (`auth_state/<broker>.json`)**: Once logged in successfully, your session cookies and storage state are saved per broker. Subsequent runs bypass the login page and load the dashboard directly.
+* **Session Persistence (`auth_state/<broker>_profile/`)**: Each broker runs in its own persistent Chrome profile, so cookies, local storage, IndexedDB and cache survive between runs and the site sees the same returning device instead of a fresh browser. A cookie snapshot (`auth_state/<broker>.json`) restores session-only cookies Chrome drops on close. Subsequent runs bypass the login page and load the dashboard directly.
 * **Resumable, Interruption-Safe Scraping**: Every profile/URL is written to its CSV immediately after being scraped, not batched at the end - killing the process (or losing your connection) mid-run and restarting picks up exactly where it left off, with no duplicate rows. Once Phase 1 reaches the true last page it writes a completion marker (`data/binance/portfolio_urls.done`, `data/fpmarkets/leader_urls.done`) so a rerun skips straight to Phase 2 instead of re-paginating the whole leaderboard just to confirm nothing changed. A profile that fails to scrape is skipped rather than saved, so it is retried on the next run. Set `RESTART_FROM_SCRATCH=True` in `.env` to instead wipe a broker's saved CSVs/marker and start completely over.
 * **Error & 2FA Detection**: Automatically captures error messages and screenshots into `debug/<broker>/` if authentication fails, if a PIN is requested, or if an extraction comes back incomplete (when `DEBUG_SNAPSHOTS=True`). Snapshots left over from a previous run are cleared automatically at the start of the next one.
 * **Anti-Bot Friendly**: Runs with standard user agents and browser flags to prevent automated bot detection.
