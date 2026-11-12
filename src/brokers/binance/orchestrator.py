@@ -23,14 +23,17 @@ from src.brokers.binance.config import (
     PORTFOLIO_URLS_CSV_PATH,
     PORTFOLIO_URLS_DONE_MARKER,
     TRADER_DETAILS_CSV_PATH,
+    UNAVAILABLE_PORTFOLIOS_CSV_PATH,
 )
 from src.brokers.binance.csv_schema import (
     PORTFOLIO_URLS_CSV_HEADERS,
     PORTFOLIO_URLS_ID_FIELDS,
     TRADER_DETAILS_CSV_HEADERS,
     TRADER_DETAILS_ID_FIELDS,
+    UNAVAILABLE_PORTFOLIOS_CSV_HEADERS,
+    UNAVAILABLE_PORTFOLIOS_ID_FIELDS,
 )
-from src.brokers.binance.extractors import scrape_trader_profile
+from src.brokers.binance.extractors import ProfileUnavailableError, dump_debug_snapshot, scrape_trader_profile
 from src.brokers.binance.navigation import (
     click_next_page,
     disable_smart_filter,
@@ -127,13 +130,18 @@ def is_portfolio_url_collection_complete() -> bool:
 
 
 def reset_all_data() -> None:
-    """Deletes every previous-run output (both phases' CSVs and the phase-1
-    completion marker) so the pipeline restarts from a clean slate. Only
+    """Deletes every previous-run output (both phases' CSVs, the
+    unavailable-portfolio list and the phase-1 completion marker) so the pipeline restarts from a clean slate. Only
     called when RESTART_FROM_SCRATCH is set; normal runs resume instead.
 
     Does NOT touch debug/binance/ - see clear_debug_snapshots(), which is
     gated on DEBUG_SNAPSHOTS alone and called independently of this flag."""
-    for path in (PORTFOLIO_URLS_CSV_PATH, TRADER_DETAILS_CSV_PATH, PORTFOLIO_URLS_DONE_MARKER):
+    for path in (
+        PORTFOLIO_URLS_CSV_PATH,
+        TRADER_DETAILS_CSV_PATH,
+        UNAVAILABLE_PORTFOLIOS_CSV_PATH,
+        PORTFOLIO_URLS_DONE_MARKER,
+    ):
         if path.exists():
             path.unlink()
             log.warning(f"RESTART_FROM_SCRATCH: deleted {path}")
@@ -211,6 +219,17 @@ def scrape_all_trader_details(page: Page, max_profiles: Optional[int] = None) ->
     seen_ids = load_existing_ids(TRADER_DETAILS_CSV_PATH, TRADER_DETAILS_ID_FIELDS)
     log.info(f"Loaded {len(seen_ids)} existing trader details from {TRADER_DETAILS_CSV_PATH.name}")
 
+    # Portfolios whose page redirected away in an earlier run are left out
+    # entirely (not just of this run's backlog), so the totals below only
+    # count profiles that can actually be scraped.
+    unavailable_ids = load_existing_ids(UNAVAILABLE_PORTFOLIOS_CSV_PATH, UNAVAILABLE_PORTFOLIOS_ID_FIELDS)
+    if unavailable_ids:
+        portfolios = [
+            p for p in portfolios
+            if p["portfolio_id"] not in unavailable_ids and p["profile_url"] not in unavailable_ids
+        ]
+        log.info(f"Skipping portfolios listed in {UNAVAILABLE_PORTFOLIOS_CSV_PATH.name} (page redirects away).")
+
     remaining = [
         p for p in portfolios
         if p["portfolio_id"] not in seen_ids and p["profile_url"] not in seen_ids
@@ -224,6 +243,7 @@ def scrape_all_trader_details(page: Page, max_profiles: Optional[int] = None) ->
     remaining = remaining[:max_profiles]
 
     total_saved = 0
+    newly_unavailable = 0
     next_break_at = random.randint(LONG_BREAK_EVERY_MIN, LONG_BREAK_EVERY_MAX)
     for i, portfolio in enumerate(remaining, start=1):
         profile_url = portfolio["profile_url"]
@@ -231,15 +251,41 @@ def scrape_all_trader_details(page: Page, max_profiles: Optional[int] = None) ->
 
         try:
             result = scrape_trader_profile(page, profile_url)
+        except ProfileUnavailableError as e:
+            log.warning(
+                f"Profile unavailable: Binance redirected {profile_url} to {e.redirected_to}. "
+                f"Recording it in {UNAVAILABLE_PORTFOLIOS_CSV_PATH.name} so later runs skip it."
+            )
+            append_rows(
+                [{
+                    "portfolio_id": portfolio["portfolio_id"],
+                    "profile_url": profile_url,
+                    "redirected_to": e.redirected_to,
+                    "detected_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                }],
+                UNAVAILABLE_PORTFOLIOS_CSV_PATH,
+                UNAVAILABLE_PORTFOLIOS_CSV_HEADERS,
+            )
+            newly_unavailable += 1
+            # Still a page visit, so it gets the normal pause before the next one.
+            long_tail_sleep(MIN_DELAY_MS, MAX_DELAY_MS)
+            continue
         except PlaywrightTimeoutError as e:
             log.error(
                 f"Timeout while scraping profile {profile_url}: {e}. "
                 "This usually means Binance is throttling/blocking the session - "
                 "aborting the run (browser will be closed) rather than continuing."
             )
+            # Captured before re-raising, since the browser closes right after:
+            # shows what was on screen when the wait gave up (e.g. an overlay
+            # blocking a click, rather than the site actually not responding).
+            dump_debug_snapshot(page, "timeout", profile_url)
             raise
         except Exception as e:
             log.error(f"Failed to scrape profile {profile_url}: {e}")
+            # Shows which page the browser actually ended up on (e.g. after an
+            # unexpected redirect/reload destroyed the extraction's context).
+            dump_debug_snapshot(page, "profile_error", profile_url)
             continue
 
         row = {
@@ -261,9 +307,10 @@ def scrape_all_trader_details(page: Page, max_profiles: Optional[int] = None) ->
             long_tail_sleep(MIN_DELAY_MS, MAX_DELAY_MS)
 
     log.success(f"✓ Trader detail scraping complete! All details saved in: {TRADER_DETAILS_CSV_PATH}")
-    remaining_after_run = backlog_before_run - total_saved
+    if newly_unavailable:
+        log.info(f"{newly_unavailable} portfolio(s) found unavailable this run (see {UNAVAILABLE_PORTFOLIOS_CSV_PATH.name}).")
     return TraderDetailsSummary(
         new_saved=total_saved,
-        total_scraped=len(portfolios) - remaining_after_run,
-        remaining=remaining_after_run,
+        total_scraped=len(portfolios) - backlog_before_run + total_saved,
+        remaining=backlog_before_run - total_saved - newly_unavailable,
     )

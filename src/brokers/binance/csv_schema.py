@@ -74,3 +74,15 @@ TRADER_DETAILS_CSV_HEADERS = [
 
 # Columns used to de-dupe traders already scraped in a previous run.
 TRADER_DETAILS_ID_FIELDS = ("portfolio_id", "profile_url")
+
+# Portfolios whose profile page redirected away (see
+# UNAVAILABLE_PORTFOLIOS_CSV_PATH); phase 2 skips these.
+UNAVAILABLE_PORTFOLIOS_CSV_HEADERS = [
+    "portfolio_id",
+    "profile_url",
+    # The URL Binance redirected to (normally the Copy Trading home page).
+    "redirected_to",
+    "detected_at",
+]
+
+UNAVAILABLE_PORTFOLIOS_ID_FIELDS = ("portfolio_id", "profile_url")

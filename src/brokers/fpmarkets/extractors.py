@@ -317,7 +317,7 @@ def _has_bars(payload: Dict[str, Any]) -> bool:
     return bool(payload and payload.get("bars"))
 
 
-def _dump_debug_snapshot(detail_page: Page, tag: str, profile_url: str) -> None:
+def dump_debug_snapshot(detail_page: Page, tag: str, profile_url: str) -> None:
     """
     Saves a screenshot + full HTML of `detail_page` under DEBUG_DIR when an
     expected extraction comes back empty after exhausting the poll window, so a
@@ -338,7 +338,10 @@ def _dump_debug_snapshot(detail_page: Page, tag: str, profile_url: str) -> None:
 
         detail_page.screenshot(path=str(base.with_suffix(".png")), full_page=True)
         base.with_suffix(".html").write_text(detail_page.content(), encoding="utf-8")
-        log.warning(f"Debug snapshot saved for {tag} (trader {trader_id}): {base.name}.png/.html")
+        log.warning(
+            f"Debug snapshot saved for {tag} (trader {trader_id}): {base.name}.png/.html "
+            f"(page URL at capture: {detail_page.url})"
+        )
     except Exception as e:
         log.debug(f"Failed to save debug snapshot ({tag}): {e}")
 
@@ -398,7 +401,7 @@ def scrape_trader_profile(detail_page: Page, profile_url: str) -> Dict[str, str]
     )
     metrics.update(period_metrics)
     if not _has_period_return_data(period_metrics):
-        _dump_debug_snapshot(detail_page, "return_period", profile_url)
+        dump_debug_snapshot(detail_page, "return_period", profile_url)
 
     _maybe_human_scroll(detail_page)
 
@@ -423,7 +426,7 @@ def scrape_trader_profile(detail_page: Page, profile_url: str) -> Dict[str, str]
         )
         metrics.update(trading_metrics)
         if not _has_trading_indicator_data(trading_metrics):
-            _dump_debug_snapshot(detail_page, "trading_indicators", profile_url)
+            dump_debug_snapshot(detail_page, "trading_indicators", profile_url)
 
         max_pd_data = evaluate_with_frame_fallback(detail_page, _JS_MAX_PROFIT_DRAWDOWN_EXTRACTOR)
         if max_pd_data:

@@ -2,6 +2,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from patchright.sync_api import Page
+from patchright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from src.common.config import random_sleep
 from src.common.logger import log
@@ -250,6 +251,51 @@ def _poll_until(check, timeout_ms: int, poll_ms: int, page: Page) -> bool:
     return False
 
 
+# Binance's "Tips" onboarding popup ("Grab your $10,000 virtual USDT, try
+# copy trading risk free!"), anchored to a profile's Mock Copy button. Its
+# mask dims the whole page and intercepts every click, so the tab clicks
+# below sit retrying until they time out - which used to abort phase 2 as
+# if Binance were throttling the session.
+_COACHMARK_MASK_SELECTOR = "div.bn-coachmark-mask"
+# Skip ends the whole tour; Done only advances/finishes the current step.
+_COACHMARK_BUTTON_SELECTORS = (
+    "button.bn-coachmark-panel-extra-skip",
+    "button.bn-coachmark-panel-extra-actions-next",
+)
+
+
+def dismiss_coachmark(detail_page: Page) -> bool:
+    """Closes the "Tips" popup the way a visitor would (clicking Skip) if
+    it is currently showing, then waits for its mask to go away. Returns
+    True if a popup was dismissed.
+
+    If the mask doesn't go away, this only logs it: the caller's next
+    click then times out and aborts the run exactly as it would have
+    without this helper, rather than the problem being hidden here."""
+    mask = detail_page.locator(_COACHMARK_MASK_SELECTOR).first
+    if not mask.is_visible():
+        return False
+
+    for selector in _COACHMARK_BUTTON_SELECTORS:
+        button = detail_page.locator(selector).first
+        if button.is_visible():
+            log.info("Dismissing Binance 'Tips' popup...")
+            # A person reads the popup for a moment before closing it.
+            random_sleep(800, 2000)
+            button.click()
+            break
+    else:
+        log.warning("'Tips' popup mask is showing but no Skip/Done button was found.")
+        return False
+
+    try:
+        mask.wait_for(state="hidden", timeout=5000)
+    except PlaywrightTimeoutError:
+        log.warning("'Tips' popup mask still showing after clicking Skip.")
+    random_sleep(400, 900)
+    return True
+
+
 _POSITION_HISTORY_TAB_SELECTOR = "div[role='tab']:has-text('Position History')"
 _POSITION_HISTORY_ROW_SELECTOR = "tr.bn-web-table-row"
 # Some portfolios hide their trading history entirely; this is the empty
@@ -285,6 +331,7 @@ def click_position_history_tab(detail_page: Page, timeout_ms: int = 10000, poll_
     if tab.count() == 0:
         return "unknown"
 
+    dismiss_coachmark(detail_page)
     tab.scroll_into_view_if_needed()
     tab.click()
 
@@ -329,6 +376,7 @@ def click_copy_traders_tab(detail_page: Page, timeout_ms: int = 10000, poll_ms: 
     if tab.count() == 0:
         return False
 
+    dismiss_coachmark(detail_page)
     tab.scroll_into_view_if_needed()
     tab.click()
 

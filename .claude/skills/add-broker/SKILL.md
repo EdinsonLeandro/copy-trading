@@ -29,7 +29,7 @@ Create these files, each with the same responsibilities as the template:
 | `auth.py` | `perform_login(page) -> bool`, `is_session_valid(page) -> bool`, and `get_authenticated_session(force_fresh_login)` that delegates to `src.common.browser_session.get_authenticated_session`. Type with `human_type`, pause with `random_sleep`. |
 | `csv_schema.py` | Phase 1 headers + `*_ID_FIELDS`, `TRADER_DETAILS_CSV_HEADERS` + `TRADER_DETAILS_ID_FIELDS`. Comment each JSON column with an example value. |
 | `navigation.py` | Open the leaderboard, read page info, extract cards (ID + profile URL), `is_next_button_disabled`, `click_next_page`, tab-switch helpers for the profile page. |
-| `extractors.py` | `scrape_trader_profile(page, profile_url) -> dict`, JS extraction scripts, `_dump_debug_snapshot`, `_maybe_human_scroll`. |
+| `extractors.py` | `scrape_trader_profile(page, profile_url) -> dict`, JS extraction scripts, `dump_debug_snapshot`, `_maybe_human_scroll`. |
 | `orchestrator.py` | Phase 1 `scrape_all_<x>_urls`, `is_<x>_url_collection_complete`, `reset_all_data`, `clear_debug_snapshots`, Phase 2 `scrape_all_trader_details` returning `TraderDetailsSummary`. |
 | `run.py` | `run(force_fresh_login=False)`: `log.set_label`, `ensure_directories`, `RESTART_FROM_SCRATCH` reset, `clear_debug_snapshots`, auth, both phases with summary panels, `close_browser_session` in `finally`. |
 
@@ -39,7 +39,7 @@ Create these files, each with the same responsibilities as the template:
 - Phase 1 appends each page's new rows immediately and writes the `.done` marker only on the true last page (not on a `max_pages` stop).
 - Phase 2: skip IDs already in `trader_details.csv`, append one row per profile right away, cap the run at `random.randint(SESSION_CAP_MIN, SESSION_CAP_MAX)`, take a long break every `LONG_BREAK_EVERY_MIN`-`MAX` profiles, `random_sleep(MIN_DELAY_MS, MAX_DELAY_MS)` otherwise.
 - Errors: `scrape_trader_profile` must not swallow navigation errors. In the orchestrator, `PlaywrightTimeoutError` → log and re-raise (abort run); any other exception → log and `continue` (profile not saved, retried next run).
-- Polling: use `wait_for_evaluate` with an `is_sufficient` check that waits for the slowest-rendering field, and call `_dump_debug_snapshot` when it still comes back incomplete.
+- Polling: use `wait_for_evaluate` with an `is_sufficient` check that waits for the slowest-rendering field, and call `dump_debug_snapshot` when it still comes back incomplete.
 - Prefer matching selectors by class substring or by structure over exact class names; capture chart data from network responses (`expect_response`) when the site exposes it.
 - Store values as displayed text; JSON-encode nested data with `json.dumps(..., ensure_ascii=False)`.
 - Log with `src.common.logger.log`, never `print`.

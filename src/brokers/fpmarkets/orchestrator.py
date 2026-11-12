@@ -30,7 +30,7 @@ from src.brokers.fpmarkets.csv_schema import (
     TRADER_DETAILS_CSV_HEADERS,
     TRADER_DETAILS_ID_FIELDS,
 )
-from src.brokers.fpmarkets.extractors import scrape_trader_profile
+from src.brokers.fpmarkets.extractors import dump_debug_snapshot, scrape_trader_profile
 from src.brokers.fpmarkets.navigation import (
     click_next_page,
     extract_cards_from_page,
@@ -236,9 +236,16 @@ def scrape_all_trader_details(page: Page, max_profiles: Optional[int] = None) ->
                 "This usually means FP Markets is throttling/blocking the session - "
                 "aborting the run (browser will be closed) rather than continuing."
             )
+            # Captured before re-raising, since the browser closes right after:
+            # shows what was on screen when the wait gave up (e.g. an overlay
+            # blocking a click, rather than the site actually not responding).
+            dump_debug_snapshot(page, "timeout", profile_url)
             raise
         except Exception as e:
             log.error(f"Failed to scrape profile {profile_url}: {e}")
+            # Shows which page the browser actually ended up on (e.g. after an
+            # unexpected redirect/reload destroyed the extraction's context).
+            dump_debug_snapshot(page, "profile_error", profile_url)
             continue
 
         row = {

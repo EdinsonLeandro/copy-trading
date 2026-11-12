@@ -50,6 +50,12 @@ PORTFOLIO_URLS_CSV_PATH = DATA_DIR / "portfolio_urls.csv"
 # leaderboard (~600 pages) just to confirm there's nothing new to add.
 PORTFOLIO_URLS_DONE_MARKER = DATA_DIR / "portfolio_urls.done"
 
+# Phase 2 side output: portfolios whose profile page redirects back to the
+# Copy Trading home page instead of showing the trader (e.g. a portfolio
+# Binance no longer lets this account view). Recorded so later runs skip
+# them instead of retrying them every run or saving empty rows for them.
+UNAVAILABLE_PORTFOLIOS_CSV_PATH = DATA_DIR / "unavailable_portfolios.csv"
+
 
 def ensure_directories() -> None:
     """Creates this broker's output directories. Called explicitly at startup

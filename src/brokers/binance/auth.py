@@ -88,11 +88,17 @@ def perform_login(page: Page) -> bool:
     )
     time.sleep(SECURITY_VERIFICATION_WAIT_SECONDS)
 
+    # The "Stay Logged In" page can render after the fixed wait above ends,
+    # so this waits for the button instead of checking once - an instant
+    # is_visible() check missed it and left the run stuck on
+    # /login/stay-signed-in, which the URL check below treats as a failure.
+    # Matched by its visible label rather than an aria-label attribute.
     try:
-        stay_logged_in_btn = page.locator("button[aria-label='Yes']").first
-        if stay_logged_in_btn.is_visible():
-            log.info("Confirming 'Stay Logged In'...")
-            stay_logged_in_btn.click()
+        stay_logged_in_btn = page.get_by_role("button", name="Yes", exact=True).first
+        stay_logged_in_btn.wait_for(state="visible", timeout=15000)
+        random_sleep(500, 1200)
+        log.info("Confirming 'Stay Logged In'...")
+        stay_logged_in_btn.click()
     except Exception as e:
         log.debug(f"'Stay Logged In' prompt not shown: {e}")
 

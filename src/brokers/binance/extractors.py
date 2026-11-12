@@ -4,8 +4,11 @@ import re
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
+from patchright.sync_api import Error as PlaywrightError
 from patchright.sync_api import Page
+from patchright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from src.common.config import DEBUG_SNAPSHOTS, random_sleep
 from src.common.logger import log
@@ -16,11 +19,34 @@ from src.brokers.binance.navigation import (
     click_copy_traders_tab,
     click_next_page,
     click_position_history_tab,
+    dismiss_coachmark,
     is_next_button_disabled,
 )
 
 
-def _dump_debug_snapshot(detail_page: Page, tag: str, profile_url: str) -> None:
+class ProfileUnavailableError(Exception):
+    """Raised when a profile page redirects away (normally to the Copy
+    Trading home page) instead of showing the trader, so the orchestrator
+    can record the portfolio as unavailable rather than retrying it every
+    run or saving an empty row for it."""
+
+    def __init__(self, profile_url: str, redirected_to: str):
+        super().__init__(f"{profile_url} redirected to {redirected_to}")
+        self.profile_url = profile_url
+        self.redirected_to = redirected_to
+
+
+def is_on_profile_page(url: str, portfolio_id: str) -> bool:
+    """True if `url` is still the lead-details page for `portfolio_id`.
+    Compares the path's last segment exactly, so portfolio 123 doesn't
+    match a URL for portfolio 1234."""
+    path = urlparse(url).path.rstrip("/")
+    if not portfolio_id:
+        return "/lead-details/" in path
+    return path.endswith(f"/lead-details/{portfolio_id}")
+
+
+def dump_debug_snapshot(detail_page: Page, tag: str, profile_url: str) -> None:
     """
     Saves a screenshot + full HTML of `detail_page` under DEBUG_DIR when
     an expected extraction comes back incomplete, so a failure can be
@@ -42,7 +68,10 @@ def _dump_debug_snapshot(detail_page: Page, tag: str, profile_url: str) -> None:
 
         detail_page.screenshot(path=str(base.with_suffix(".png")), full_page=True)
         base.with_suffix(".html").write_text(detail_page.content(), encoding="utf-8")
-        log.warning(f"Debug snapshot saved for {tag} (portfolio {portfolio_id}): {base.name}.png/.html")
+        log.warning(
+            f"Debug snapshot saved for {tag} (portfolio {portfolio_id}): {base.name}.png/.html "
+            f"(page URL at capture: {detail_page.url})"
+        )
     except Exception as e:
         log.debug(f"Failed to save debug snapshot ({tag}): {e}")
 
@@ -323,7 +352,7 @@ def scrape_position_history(detail_page: Page, profile_url: str) -> Tuple[List[D
 
     if status != "rows":
         log.debug("Position History tab/rows did not render within the wait budget.")
-        _dump_debug_snapshot(detail_page, "position_history_tab", profile_url)
+        dump_debug_snapshot(detail_page, "position_history_tab", profile_url)
         return [], False
 
     random_sleep(800, 1500)
@@ -336,7 +365,7 @@ def scrape_position_history(detail_page: Page, profile_url: str) -> Tuple[List[D
         interval_ms=500,
     )
     if not rows:
-        _dump_debug_snapshot(detail_page, "position_history_rows", profile_url)
+        dump_debug_snapshot(detail_page, "position_history_rows", profile_url)
     return rows or [], False
 
 
@@ -389,7 +418,7 @@ def scrape_copy_traders(
     own header labels."""
     if not click_copy_traders_tab(detail_page):
         log.debug("Copy Traders tab has no rows (likely zero copiers).")
-        _dump_debug_snapshot(detail_page, "copy_traders_tab", profile_url)
+        dump_debug_snapshot(detail_page, "copy_traders_tab", profile_url)
         return []
 
     random_sleep(800, 1500)
@@ -426,7 +455,7 @@ def scrape_copy_traders(
                 interval_ms=750,
             ) or []
         if not page_rows:
-            _dump_debug_snapshot(detail_page, "copy_traders_rows", profile_url)
+            dump_debug_snapshot(detail_page, "copy_traders_rows", profile_url)
         all_traders.extend(page_rows)
 
         if max_pages and page_idx >= max_pages:
@@ -435,6 +464,7 @@ def scrape_copy_traders(
         if is_next_button_disabled(detail_page, scope=ACTIVE_TAB_PANE_SELECTOR):
             break
 
+        dismiss_coachmark(detail_page)
         click_next_page(detail_page, ready_selector=ready_selector, scope=ACTIVE_TAB_PANE_SELECTOR)
         random_sleep(500, 1000)
         page_idx += 1
@@ -541,24 +571,52 @@ def scrape_trader_profile(detail_page: Page, profile_url: str) -> Dict[str, Any]
     roi_chart_data = _capture_roi_chart_data(detail_page, profile_url, portfolio_id)
     random_sleep(1000, 2000)
 
-    result = wait_for_evaluate(
-        detail_page,
-        _EXTRACT_PROFILE_JS,
-        is_sufficient=_is_profile_data_loaded,
-        attempts=16,
-        interval_ms=600,
-    ) or {}
+    # Some portfolios load briefly and then redirect to the Copy Trading home
+    # page. When the redirect lands mid-extraction the page's JS context is
+    # destroyed ("Execution context was destroyed"); when it lands just
+    # after, the fields come back empty. Both are checked against the
+    # current URL here so neither is mistaken for a normal failure.
+    # TimeoutError is re-raised untouched: it keeps aborting the run.
+    try:
+        _raise_if_redirected(detail_page, profile_url, portfolio_id)
+        result = wait_for_evaluate(
+            detail_page,
+            _EXTRACT_PROFILE_JS,
+            is_sufficient=_is_profile_data_loaded,
+            attempts=16,
+            interval_ms=600,
+        ) or {}
+        profile_loaded = _is_profile_data_loaded(result)
 
-    if not _is_profile_data_loaded(result):
-        _dump_debug_snapshot(detail_page, "profile_fields", profile_url)
+        if not profile_loaded:
+            _raise_if_redirected(detail_page, profile_url, portfolio_id)
+            dump_debug_snapshot(detail_page, "profile_fields", profile_url)
 
-    _maybe_human_scroll(detail_page)
+        _maybe_human_scroll(detail_page)
 
-    result["tags"] = json.dumps(result.get("tags") or [], ensure_ascii=False)
-    result["asset_preferences"] = json.dumps(result.get("asset_preferences") or {}, ensure_ascii=False)
-    result["roi_chart"] = json.dumps(_parse_roi_chart_payload(roi_chart_data), ensure_ascii=False)
-    position_history, is_private_portfolio = scrape_position_history(detail_page, profile_url)
-    result["position_history"] = json.dumps(position_history, ensure_ascii=False)
-    result["is_private_portfolio"] = is_private_portfolio
-    result["copy_traders"] = json.dumps(scrape_copy_traders(detail_page, profile_url), ensure_ascii=False)
+        result["tags"] = json.dumps(result.get("tags") or [], ensure_ascii=False)
+        result["asset_preferences"] = json.dumps(result.get("asset_preferences") or {}, ensure_ascii=False)
+        result["roi_chart"] = json.dumps(_parse_roi_chart_payload(roi_chart_data), ensure_ascii=False)
+        position_history, is_private_portfolio = scrape_position_history(detail_page, profile_url)
+        result["position_history"] = json.dumps(position_history, ensure_ascii=False)
+        result["is_private_portfolio"] = is_private_portfolio
+        result["copy_traders"] = json.dumps(scrape_copy_traders(detail_page, profile_url), ensure_ascii=False)
+    except PlaywrightTimeoutError:
+        raise
+    except PlaywrightError:
+        _raise_if_redirected(detail_page, profile_url, portfolio_id)
+        raise
+
+    # A redirect during the tab scraping would leave the tab data empty
+    # without raising. With the main fields already loaded the profile is
+    # real, so it's skipped (retried next run) rather than marked unavailable.
+    if not is_on_profile_page(detail_page.url, portfolio_id):
+        if not profile_loaded:
+            raise ProfileUnavailableError(profile_url, detail_page.url)
+        raise RuntimeError(f"Page redirected to {detail_page.url} while scraping the profile's tabs")
     return result
+
+
+def _raise_if_redirected(detail_page: Page, profile_url: str, portfolio_id: str) -> None:
+    if not is_on_profile_page(detail_page.url, portfolio_id):
+        raise ProfileUnavailableError(profile_url, detail_page.url)

@@ -80,6 +80,10 @@ def launch_persistent_browser(
         # `--enable-automation` shows the "controlled by automated test
         # software" bar and switches on automation-only browser behavior.
         ignore_default_args=["--enable-automation"],
+        # Patchright/Playwright add `--no-sandbox` unless this is set, which
+        # shows an "unsupported command-line flag" warning bar, turns off
+        # Chrome's process sandbox, and is something real visitors never run.
+        chromium_sandbox=True,
     )
     try:
         return playwright.chromium.launch_persistent_context(**launch_kwargs)
